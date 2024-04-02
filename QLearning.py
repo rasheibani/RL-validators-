@@ -1,5 +1,5 @@
 # this program merge route instruction and Environment together then unified them for a unified state representation
-# to implement Q-learning algorithm
+# to implement Q-learning algorithm ff
 
 import textworld
 import re

@@ -7,7 +7,7 @@ from gymnasium import spaces
 import numpy as np
 import spacy
 import re
-from stable_baselines3 import DQN
+from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
 
@@ -25,7 +25,16 @@ def extract_coordinates(game_state):
 
         return np.array([0, 0])
 
+def get_admissible_actions(feedback):
+    directions = ['north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
+    admissible_actions = []
 
+    for direction in directions:
+        pattern = r'going ' + direction + ' '
+        if re.search(pattern, feedback, re.IGNORECASE):
+            admissible_actions.append('go '+direction)
+
+    return admissible_actions
 def feedback_to_embedding(feedback):
     doc = nlp(feedback)
     embeddings = []
@@ -65,10 +74,10 @@ class TextWorldEnv(gym.Env):
         self.game_state = None
         self.game_address = game_address
         self.env = textworld.start(game_address)
-        # define this directions as action spaces : 'go left, go right, go forward, go back'
         self.action_space = spaces.Discrete(8)
         self.visited_states_actions = set()
         self.last_feedback_embedding = None
+        self.counter = 0
 
         # The observation space is a Dict space with the following keys:
         # - 'text': a string representing the current game state
@@ -91,31 +100,38 @@ class TextWorldEnv(gym.Env):
         return observation, info
 
     def step(self, action):
-        if (self.x, self.y, action) in self.visited_states_actions:
-            reward = -2
-            terminate = True
+        # check if the action is within the admissible actions
+        admissible_actions = get_admissible_actions(self.game_state.feedback)
+        # print(self.game_state.feedback)
+        # print(admissible_actions)
+
+        sentence = ""
+        if action == 0:
+            sentence = "go north"
+        elif action == 1:
+            sentence = "go south"
+        elif action == 2:
+            sentence = "go east"
+        elif action == 3:
+            sentence = "go west"
+        elif action == 4:
+            sentence = "go northeast"
+        elif action == 5:
+            sentence = "go northwest"
+        elif action == 6:
+            sentence = "go southeast"
+        elif action == 7:
+            sentence = "go southwest"
+
+        if sentence not in admissible_actions:
+            # print(f"Action {sentence} is not admissible. Skipping.")
+            reward = -1
+            terminate = False
             truncated = False
             observation = {'text': self.last_feedback_embedding, 'x': np.array([self.x], dtype='float32'),
                            'y': np.array([self.y], dtype='float32')}
+            return observation, reward, terminate, truncated, {}
         else:
-
-            if action == 0:
-                sentence = "Go north."
-            elif action == 1:
-                sentence = "Go south."
-            elif action == 2:
-                sentence = "Go east."
-            elif action == 3:
-                sentence = "Go west."
-            elif action == 4:
-                sentence = "Go northeast."
-            elif action == 5:
-                sentence = "Go northwest."
-            elif action == 6:
-                sentence = "Go southeast."
-            elif action == 7:
-                sentence = "Go southwest."
-            # print(self.game_state.feedback)
             # print(sentence)
             self.game_state, reward, done_dummy = self.env.step(sentence)
             self.x, self.y = extract_coordinates(self.game_state.feedback)
@@ -129,24 +145,25 @@ class TextWorldEnv(gym.Env):
                 reward = 100
                 terminate = True
                 # print(self.game_state.feedback)
+                self.counter = self.counter + 1
+                # print(self.counter)
+
                 print('----------------------------------------------------------------------')
                 print('---------Destination reached------------------------------------------')
 
-            elif distance < 1000:
-                reward = 10
-                terminate = False
             else:
-                reward = 0
+                reward = distance/1000
                 terminate = False
             truncated = False
             self.visited_states_actions.add((self.x, self.y, action))
-            # print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
+            if self.counter > 4:
+                print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
 
             x_as_array = np.array([self.x], dtype='float32')
             y_as_array = np.array([self.y], dtype='float32')
             observation = {'text': feedback_embedding, 'x': x_as_array, 'y': y_as_array}
 
-        return observation, reward, terminate, truncated, {}
+            return observation, reward, terminate, truncated, {}
 
     def render(self):
         self.env.render()
@@ -160,18 +177,17 @@ class TextWorldEnv(gym.Env):
 
 if __name__ == "__main__":
     counter = 0
-    total_steps = 500
+    total_steps = 1000
     # Load the pre-trained English model
     nlp = spacy.load("en_core_web_sm")
     env = TextWorldEnv(Environment)
 
-
-
-
     # from stable_baselines3.common.env_checker import check_env
     # check_env(env)
-    model = DQN('MultiInputPolicy', env, verbose=1, learning_rate=0.1, seed=45, exploration_fraction=0.5, gamma=0.9)
-    model.learn(total_timesteps=total_steps, log_interval=150)
+    # do the training withe high exploration rate
+    model = DQN('MultiInputPolicy', env, verbose=1, learning_rate=0.01, train_freq=(5,"episode"),
+                exploration_final_eps=0.9, exploration_initial_eps=0.9, gradient_steps=-1)
+    model.learn(total_timesteps=total_steps, log_interval=1)
 
     # Evaluate the agent
     mean_reward, std_reward = evaluate_policy(model, model.get_env(), n_eval_episodes=10)
@@ -182,6 +198,14 @@ if __name__ == "__main__":
     del model
 
     model = DQN.load("dqn_textworld")
+
+    # do the testing with PPO model
+    # model = PPO('MultiInputPolicy', env, verbose=1)
+    # model.learn(total_timesteps=total_steps, log_interval=1)
+    # mean_reward, std_reward = evaluate_policy(model, model.get_env(), n_eval_episodes=10)
+    # print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+
+
 
 
 

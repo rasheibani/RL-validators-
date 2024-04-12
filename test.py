@@ -10,6 +10,7 @@ import re
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
+from stable_baselines3.common.env_util import make_vec_env
 
 
 def extract_coordinates(game_state):
@@ -120,12 +121,12 @@ class TextWorldEnv(gym.Env):
             sentence = "go northwest"
         elif action == 6:
             sentence = "go southeast"
-        elif action == 7:
+        else:
             sentence = "go southwest"
 
         if sentence not in admissible_actions:
             # print(f"Action {sentence} is not admissible. Skipping.")
-            reward = -1
+            reward = -0.07
             terminate = False
             truncated = False
             observation = {'text': self.last_feedback_embedding, 'x': np.array([self.x], dtype='float32'),
@@ -148,16 +149,16 @@ class TextWorldEnv(gym.Env):
                 self.counter = self.counter + 1
                 # print(self.counter)
 
-                print('----------------------------------------------------------------------')
-                print('---------Destination reached------------------------------------------')
+                # print('----------------------------------------------------------------------')
+                # print('---------Destination reached------------------------------------------')
 
             else:
-                reward = distance/1000
+                reward = 0
                 terminate = False
             truncated = False
             self.visited_states_actions.add((self.x, self.y, action))
-            if self.counter > 4:
-                print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
+            # if self.counter > 0:
+            #     print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
 
             x_as_array = np.array([self.x], dtype='float32')
             y_as_array = np.array([self.y], dtype='float32')
@@ -177,26 +178,40 @@ class TextWorldEnv(gym.Env):
 
 if __name__ == "__main__":
     counter = 0
-    total_steps = 1000
+    total_steps = 1e7
     # Load the pre-trained English model
     nlp = spacy.load("en_core_web_sm")
     env = TextWorldEnv(Environment)
+    env2 = make_vec_env(TextWorldEnv, n_envs=16, env_kwargs={'game_address': Environment})
 
     # from stable_baselines3.common.env_checker import check_env
     # check_env(env)
     # do the training withe high exploration rate
-    model = DQN('MultiInputPolicy', env, verbose=1, learning_rate=0.01, train_freq=(5,"episode"),
-                exploration_final_eps=0.9, exploration_initial_eps=0.9, gradient_steps=-1)
-    model.learn(total_timesteps=total_steps, log_interval=1)
 
-    # Evaluate the agent
-    mean_reward, std_reward = evaluate_policy(model, model.get_env(), n_eval_episodes=10)
+    model = DQN('MultiInputPolicy', env2, verbose=1,
+                train_freq=1,
+                exploration_final_eps=0.2,
+                exploration_initial_eps=0.9,
+                exploration_fraction=0.05,
+                gradient_steps=4,
+                gamma=0.8,
+                learning_rate=0.3,
+                seed=0)
+    # make sure to include parameters of the trained model in the log file
+    model.learn(total_timesteps=total_steps, log_interval=1, tb_log_name="./dqn_test")
 
-    print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
-
+    # model = DQN('MultiInputPolicy', env, verbose=1, train_freq=(1,"episode"),
+    #             exploration_final_eps=0.65, exploration_initial_eps=0.9, gradient_steps=1, gamma=0.1, learning_rate=0.1)
+    # model.learn(total_timesteps=total_steps, log_interval=1000, tb_log_name="./dqn_textworld")
+    #
+    # # Evaluate the agent
+    # mean_reward, std_reward = evaluate_policy(model, model.get_env(), n_eval_episodes=10)
+    #
+    # print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+    #
     model.save("dqn_textworld")
     del model
-
+    #
     model = DQN.load("dqn_textworld")
 
     # do the testing with PPO model

@@ -3,13 +3,10 @@
 
 import textworld
 import re
-from Read_Route_Instructions import read_route_instructions
 import xml.etree.ElementTree as ET
-import creating_ni_2
-import creating_ni_3
 import openpyxl
 import multiprocessing
-import os
+import numpy as np
 
 
 # Extracting the x and y coordinates from the sentence
@@ -21,9 +18,11 @@ def extract_coordinates(game_state):
     if matches:
         x = float(matches.group(1))
         y = float(matches.group(2))
-        return x, y
+        return np.array([x]), np.array([y])
     else:
-        return None
+
+        return np.array([0]), np.array([0])
+
 
 
 def process_letter(letter):
@@ -38,16 +37,14 @@ def process_letter(letter):
             y_destination = route.get('y_destination')
             primary_orientation = 6
             # check if the game is already created
-            game_address = 'games/random/' + lettertext + '_' + x_origin + '_' + y_origin + '.z8'
+            game_address = 'data/Environments/' + lettertext + '_' + x_origin + '_' + y_origin + '.z8'
 
             for style in route.findall('style'):
                 if style.get('name') == "Turn-based":
                     for grammar in style.findall('grammar'):
                         sentence = grammar.find('route_instruction').text
 
-                        # Split the sentence into a list of sentences
                         sentences_list = sentence.split(". ")
-                        # calculate the size of the list
                         size_of_list = len(sentences_list)
 
                         if size_of_list < 2:
@@ -64,30 +61,21 @@ def process_letter(letter):
 
                         for sentence in sentences_list:
                             if sentence != 'Arrive at destination.':
-                                # print (sentence)
-
-                                if False:
-                                    # sentence in ['Make a sharp right', 'Make a sharp left']:
-                                    # 'Turn slightly left', 'Turn slightly right']:
-                                    print('un-understandable grammar')
-                                    break
-                                else:
-                                    # print('\x1b[6;30;43m' + sentence + '\x1b[0m')
                                     game_state, reward, done = env.step(sentence)
+                                    done = False
+                                    reward = step_reward
+                                    print(game_state.feedback)
                                     # env.render()
-
                             else:
+                                done = True
+                                reward = final_reward
                                 x, y = extract_coordinates(game_state.feedback)
 
                         if x == float(x_destination) and y == float(y_destination):
                             valid_invalid = "Valid"
-                            # print in green a VALID message
-                            # print('\x1b[6;30;42m' + "||||||||| Valid Route Instruction, Intended Destination!! ||||||| " + '\x1b[0m')
 
                         else:
                             valid_invalid = "Invalid"
-                            # print in red an INVALID message
-                            # print('\x1b[6;30;41m' + "||||||||| Invalid Route Instruction, Wrong Destination!! ||||||| " + '\x1b[0m')
 
                         env.close()
                         results.append(
@@ -97,6 +85,8 @@ def process_letter(letter):
 
 
 if __name__ == '__main__':
+    step_reward = -1
+    final_reward = 100
     num_cores = multiprocessing.cpu_count()
     pool = multiprocessing.Pool(num_cores)  # Create a process pool
 
@@ -108,12 +98,12 @@ if __name__ == '__main__':
     sheet.append(["Letter", "Origin_X", "Origin_Y", "Destination_X", "Destination_Y", "Grammar", "Valid/Invalid"])
     lock = multiprocessing.Lock()
 
-    tree = ET.parse('data/RI/Route_Instructions_LongestShortestV10.xml')
+    tree = ET.parse('data/RouteInstructions/Route_Instructions_LongestShortestV8.xml')
     # Get the root element
     root = tree.getroot()
 
     letters = root.findall('letter')
-    # letters = letters[0:5]
+    letters = letters[0:1]
 
     result = pool.map(process_letter, letters)
 
@@ -126,3 +116,5 @@ if __name__ == '__main__':
     # Close the pool and wait for all processes to finish
     pool.close()
     pool.join()
+
+

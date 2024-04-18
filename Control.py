@@ -12,7 +12,8 @@ from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
 from stable_baselines3.common.env_util import make_vec_env
-
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
+from stable_baselines3.common.monitor import Monitor
 
 
 def extract_coordinates(game_state):
@@ -173,7 +174,14 @@ if __name__ == "__main__":
     nlp = spacy.load("en_core_web_sm")
 
     env = TextWorldEnv(Environment)
+    env = Monitor(env)
+    eval_env = Monitor(env)
+
+    stop_callback = StopTrainingOnRewardThreshold(reward_threshold=490, verbose=1)
+    eval_callback = EvalCallback(eval_env, callback_after_eval=stop_callback, eval_freq=1000000, n_eval_episodes=5, deterministic=True, render=True, verbose=1, best_model_save_path="best_model")
+
     model = PPO("MultiInputPolicy", env, verbose=1, seed=0)
-    model.learn(total_timesteps=1000000, log_interval=1)
+    model.learn(total_timesteps=1000000, log_interval=1, callback=eval_callback)
+    model.save("ppo_textworld")
 
 

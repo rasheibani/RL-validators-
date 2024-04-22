@@ -12,6 +12,9 @@ from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
+
 
 
 
@@ -69,17 +72,16 @@ class TextWorldEnv(gym.Env):
         # - 'text': a string representing the current game state
         # - 'x': the x-coordinate of the player
         # - 'y': the y-coordinate of the player
-        self.observation_space = spaces.Dict({
-            'text': spaces.Box(low=-np.inf, high=np.inf, shape=(96,), dtype='float32')})
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(96,), dtype='float32')
 
     def reset(self, **kwargs):
         self.game_state = self.env.reset()
         self.x, self.y = extract_coordinates(self.game_state.feedback)
-        x_as_array = np.array([self.x], dtype='float32')
-        y_as_array = np.array([self.y], dtype='float32')
+        # x_as_array = np.array([self.x], dtype='float32')
+        # y_as_array = np.array([self.y], dtype='float32')
         feedback_embedding = feedback_to_embedding(self.game_state.feedback)
         self.last_feedback_embedding = feedback_embedding
-        observation = {'text': feedback_embedding }
+        observation = feedback_embedding
         info = {}  # Create an empty info dictionary
         self.visited_states_actions.clear()
         return observation, info
@@ -113,7 +115,7 @@ class TextWorldEnv(gym.Env):
             reward = -1
             terminate = False
             truncated = False
-            observation = {'text': self.last_feedback_embedding}
+            observation = self.last_feedback_embedding
             return observation, reward, terminate, truncated, {}
         else:
             self.game_state, reward, done_dummy = self.env.step(sentence)
@@ -122,7 +124,7 @@ class TextWorldEnv(gym.Env):
             self.last_feedback_embedding = feedback_embedding
             target_x = 546281.0
             target_y = 999991.0
-            distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
+            # distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
 
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
                 reward = 500
@@ -142,9 +144,9 @@ class TextWorldEnv(gym.Env):
             # if self.counter > 0:
             #     print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
 
-            x_as_array = np.array([self.x], dtype='float32')
-            y_as_array = np.array([self.y], dtype='float32')
-            observation = {'text': feedback_embedding}
+            # x_as_array = np.array([self.x], dtype='float32')
+            # y_as_array = np.array([self.y], dtype='float32')
+            observation = feedback_embedding
 
 
             return observation, reward, terminate, truncated, {}
@@ -154,6 +156,10 @@ class TextWorldEnv(gym.Env):
 
     def close(self):
         self.env.close()
+
+
+
+
 
     def __len__(self):
         return 1  # only one game running at a time
@@ -169,11 +175,25 @@ class TextWorldEnv(gym.Env):
 
 
 
+
 if __name__ == "__main__":
     nlp = spacy.load("en_core_web_sm")
+    print(torch.cuda.is_available())
+
+    from stable_baselines3.common.monitor import Monitor
 
     env = TextWorldEnv(Environment)
-    model = PPO("MultiInputPolicy", env, verbose=1, seed=0)
-    model.learn(total_timesteps=1000000, log_interval=1)
+    env = Monitor(env, filename='data/Logs/monitor.log', allow_early_resets=True)
+
+    reward_threshold = 499
+
+    callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+    callback = EvalCallback(eval_env=env, best_model_save_path='data/',
+                            log_path='data/Logs/', eval_freq=50000, deterministic=False, render=False, callback_after_eval=callbackOnBest)
+
+
+    model = PPO(policy="MlpPolicy", env=
+                env, verbose=1, seed=0, device='cuda')
+    model.learn(total_timesteps=1000000, log_interval=1, callback=callback)
 
 

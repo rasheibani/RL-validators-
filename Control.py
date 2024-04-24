@@ -175,13 +175,13 @@ if __name__ == "__main__":
 
     env = TextWorldEnv(Environment)
     env = Monitor(env)
-    eval_env = Monitor(env)
 
     stop_callback = StopTrainingOnRewardThreshold(reward_threshold=490, verbose=1)
-    eval_callback = EvalCallback(eval_env, callback_after_eval=stop_callback, eval_freq=1000000, n_eval_episodes=5, deterministic=True, render=True, verbose=1, best_model_save_path="best_model")
+    eval_callback = EvalCallback(env, callback_after_eval=stop_callback,
+                                 deterministic=False, verbose=1, best_model_save_path="best_model", eval_freq=500000)
 
     model = PPO("MultiInputPolicy", env, verbose=1, seed=0)
-    model.learn(total_timesteps=1000000, log_interval=1, callback=eval_callback)
+    model.learn(total_timesteps=4000000, log_interval=1, callback=eval_callback)
     model.save("ppo_textworld")
 
 

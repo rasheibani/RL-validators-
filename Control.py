@@ -13,7 +13,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 import torch
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, StopTrainingOnNoModelImprovement
 
 
 
@@ -185,15 +185,17 @@ if __name__ == "__main__":
     env = TextWorldEnv(Environment)
     env = Monitor(env, filename='data/Logs/monitor.log', allow_early_resets=True)
 
+
     reward_threshold = 499
 
     callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+    callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=3, verbose=1)
     callback = EvalCallback(eval_env=env, best_model_save_path='data/',
-                            log_path='data/Logs/', eval_freq=50000, deterministic=False, render=False, callback_after_eval=callbackOnBest)
-
+                            log_path='data/Logs/', eval_freq=100000, deterministic=False, render=False,
+                            callback_after_eval=callbackOnNoImprovement)
 
     model = PPO(policy="MlpPolicy", env=
                 env, verbose=1, seed=0, device='cuda')
-    model.learn(total_timesteps=1000000, log_interval=1, callback=callback)
+    model.learn(total_timesteps=600000, log_interval=1, callback=callback, tb_log_name='PPO')
 
 

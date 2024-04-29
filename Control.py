@@ -17,6 +17,7 @@ from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewar
 
 from stable_baselines3.common.monitor import Monitor
 import multiprocessing
+import Pretraining
 
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
@@ -197,21 +198,46 @@ def load_all_envs(RIxml_address='data/RouteInstructions/Route_Instructions_Longe
                                         'env': file})
     return envs
 
-def learn_envs(Environment):
-    env = TextWorldEnv('data/Environments/'+Environment['env'], Environment['x_destination'], Environment['y_destination'])
-    env = Monitor(env, filename='data/Logs/monitor.log', allow_early_resets=True)
 
-    reward_threshold = 495
 
-    callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-    callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
-    callback = EvalCallback(eval_env=env, best_model_save_path='data/EnvironmentName/',
-                            log_path='data/Logs/EnvironmentName', eval_freq=20000, deterministic=False, render=False,
-                            callback_after_eval=callbackOnNoImprovement, callback_on_new_best=callbackOnBest)
+def learn_envs(environments):
+    model = None
+    for i, Environment in enumerate(environments):
+        env_name = Environment['env']
+        env_dir = f'data/{env_name}'
+        env_logs_dir = f'{env_dir}/Logs'
+        env_model_dir = f'{env_dir}/Models'
 
-    model = PPO(policy="MlpPolicy", env=
-    env, verbose=1, seed=0, device='cuda')
-    model.learn(total_timesteps=500000, log_interval=1, callback=callback, tb_log_name='PPO')
+        # Create and wrap the environment
+        env = TextWorldEnv(f'data/Environments/{env_name}', Environment['x_destination'], Environment['y_destination'])
+        env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+
+        reward_threshold = 490
+
+        callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+        callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
+        callback = EvalCallback(
+            eval_env=env,
+            best_model_save_path=env_model_dir,
+            log_path=env_logs_dir,
+            eval_freq=20000,
+            deterministic=False,
+            render=False,
+            callback_after_eval=callbackOnNoImprovement,
+            callback_on_new_best=callbackOnBest
+        )
+
+        # Load model if it exists, otherwise initialize it
+        if model is None:
+            model = PPO(policy="MlpPolicy", env=env, verbose=1, seed=0, device='cuda')
+        else:
+            model.set_env(env)
+
+        # Learn the model
+        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}')
+
+        # Save the model after training
+        model.save(f'{env_model_dir}/final_model')
 
     return model
 
@@ -221,12 +247,25 @@ if __name__ == "__main__":
     all_envs = load_all_envs()
     print(len(all_envs))
 
-    all_envs = all_envs[1:40]
-    print(all_envs)
+    # all_envs = all_envs[1:40]
+    # print(all_envs)
     print(torch.cuda.is_available())
 
-    for Environment in all_envs:
-        model = learn_envs(Environment)
+    # load list of environments from pretraining
+    pretraining_set = Pretraining.Pretraining
+    all_env_pretraining = []
+    for env in all_envs:
+        if env['lettertext'] in pretraining_set:
+            all_env_pretraining.append(env)
+
+    print(len(all_env_pretraining))
+
+    # learn the environments in all_env_pretraining
+    model = learn_envs(all_env_pretraining)
+
+
+
+
 
 
 

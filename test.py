@@ -1,4 +1,5 @@
 Environment = 'data/Environments/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8'
+RI = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
 
 import textworld
 import textworld.gym # Register the gym environments
@@ -143,7 +144,7 @@ class TextWorldEnv(gym.Env):
             distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
 
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
-                reward = 100
+                reward = 5000
                 terminate = True
                 # print(self.game_state.feedback)
                 self.counter = self.counter + 1
@@ -163,6 +164,7 @@ class TextWorldEnv(gym.Env):
             x_as_array = np.array([self.x], dtype='float32')
             y_as_array = np.array([self.y], dtype='float32')
             observation = {'text': feedback_embedding, 'x': x_as_array, 'y': y_as_array}
+
 
             return observation, reward, terminate, truncated, {}
 
@@ -190,13 +192,13 @@ if __name__ == "__main__":
 
     model = DQN('MultiInputPolicy', env2, verbose=1,
                 train_freq=1,
-                exploration_final_eps=0.2,
+                exploration_final_eps=0.05,
                 exploration_initial_eps=0.9,
-                exploration_fraction=0.05,
+                exploration_fraction=0.1,
                 gradient_steps=4,
                 gamma=0.8,
-                learning_rate=0.3,
-                seed=0)
+                learning_rate=0.0001,
+                seed=0, stats_window_size=1)
     # make sure to include parameters of the trained model in the log file
     model.learn(total_timesteps=total_steps, log_interval=1, tb_log_name="./dqn_test")
 
@@ -209,10 +211,10 @@ if __name__ == "__main__":
     #
     # print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
     #
-    model.save("dqn_textworld")
+    model.save("dqn_textworld001")
     del model
     #
-    model = DQN.load("dqn_textworld")
+    # model = DQN.load("dqn_textworld5")
 
     # do the testing with PPO model
     # model = PPO('MultiInputPolicy', env, verbose=1)

@@ -18,6 +18,8 @@ from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewar
 from stable_baselines3.common.monitor import Monitor
 import multiprocessing
 import Pretraining
+from stable_baselines3.common.policies import obs_as_tensor
+
 
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
@@ -31,6 +33,7 @@ def extract_coordinates(game_state):
     else:
 
         return np.array([0, 0])
+
 
 def text_to_action(text):
     mapping = {
@@ -67,7 +70,8 @@ def feedback_to_embedding(feedback):
     if embeddings:
         return np.mean(embeddings, axis=0).astype(np.float32)
     else:
-        return np.zeros((300,), dtype=np.float32)
+        # Return a tensor with a valid shape filled with zeros
+        return np.zeros((1, 300), dtype=np.float32)
 
 
 class TextWorldEnv(gym.Env):
@@ -158,7 +162,7 @@ class TextWorldEnv(gym.Env):
                 reward = -0.1
                 terminate = False
             truncated = False
-            self.visited_states_actions.add((self.x, self.y, action))
+            # self.visited_states_actions.add((self.x, self.y, action))
             # if self.counter > 0:
             #     print(f"X: {self.x}, Y: {self.y}, Action: {action}, Reward: {reward}")
 
@@ -204,13 +208,12 @@ def load_all_envs(RIxml_address='data/RouteInstructions/Route_Instructions_Longe
             for file in os.listdir('data/Environments'):
                 if file.startswith(lettertext) and file.endswith('.z8'):
                     envs.append({'lettertext': lettertext,
-                                        'x_origin': route.get('x_origin'),
-                                        'y_origin': route.get('y_origin'),
-                                        'x_destination': route.get('x_destination'),
-                                        'y_destination': route.get('y_destination'),
-                                        'env': file})
+                                 'x_origin': route.get('x_origin'),
+                                 'y_origin': route.get('y_origin'),
+                                 'x_destination': route.get('x_destination'),
+                                 'y_destination': route.get('y_destination'),
+                                 'env': file})
     return envs
-
 
 
 def learn_envs(environments):
@@ -247,12 +250,14 @@ def learn_envs(environments):
             model.set_env(env)
 
         # Learn the model
-        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}', reset_num_timesteps=True)
+        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+                    reset_num_timesteps=True)
 
         # Save the model after training
         model.save(f'{env_model_dir}/final_model')
 
     return model
+
 
 def evaluate_model(model, environments):
     for i, Environment in enumerate(environments):
@@ -266,9 +271,11 @@ def evaluate_model(model, environments):
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
         # Evaluate the model
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False, callback=None, reward_threshold=None, return_episode_rewards=False)
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False,
+                                                  callback=None, reward_threshold=None, return_episode_rewards=False)
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
     return
+
 
 def eval_by_interaction(model, env, roue_instruction):
     # use the route instruction sentence sequences to choose the consecutive actions with the environment and get the reward
@@ -282,16 +289,29 @@ def eval_by_interaction(model, env, roue_instruction):
 
     # reset the environment
     observation, info = env.reset()
+    episode_reward = 0
+
     # split the route instruction into sentences
     sentences = route_instruction.split('. ')
     for sentence in sentences:
         action, _ = model.predict(observation, deterministic=False)
-        observation, reward, terminate, truncated, info = env.step(action)
-        print(f"Action: {action}, Reward: {reward}")
+        # action = text_to_action(sentence)
+        observation, reward, terminate, truncated, _ = env.step(action)
+        b = predict_proba(model, observation)
+        print(b)
+
+        print(f"Action: {action}, Reward: {reward}, Terminate: {terminate}, Truncated: {truncated}")
+        if terminate or truncated:
+            print("Terminating the episode")
+            break
 
 
-
-
+def predict_proba(model, state):
+    obs = model.policy.obs_to_tensor(state)[0]
+    dis = model.policy.get_distribution(obs)
+    probs = dis.distribution.probs
+    probs_np = probs.detach().cpu().numpy()
+    return probs_np
 
 
 if __name__ == "__main__":
@@ -306,7 +326,7 @@ if __name__ == "__main__":
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining
     pretraining_set = all_envs[0]['lettertext']
-    print(pretraining_set)
+    print(all_envs[0])
     all_env_pretraining = []
     # for env in all_envs:
     #     if env['lettertext'] in pretraining_set:
@@ -323,31 +343,3 @@ if __name__ == "__main__":
 
     route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
     eval_by_interaction(model, all_envs[0], route_instruction)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import openpyxl
 import multiprocessing
 import numpy as np
+from Pretraining import Pretraining
 
 
 # Extracting the x and y coordinates from the sentence

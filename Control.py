@@ -32,6 +32,19 @@ def extract_coordinates(game_state):
 
         return np.array([0, 0])
 
+def text_to_action(text):
+    mapping = {
+        'go north': 0,
+        'go south': 1,
+        'go east': 2,
+        'go west': 3,
+        'go northeast': 4,
+        'go northwest': 5,
+        'go southeast': 6,
+        'go southwest': 7
+    }
+    return mapping.get(text, -1)
+
 
 def get_admissible_actions(feedback):
     directions = ['north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest']
@@ -234,12 +247,51 @@ def learn_envs(environments):
             model.set_env(env)
 
         # Learn the model
-        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}')
+        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}', reset_num_timesteps=True)
 
         # Save the model after training
         model.save(f'{env_model_dir}/final_model')
 
     return model
+
+def evaluate_model(model, environments):
+    for i, Environment in enumerate(environments):
+        env_name = Environment['env']
+        env_dir = f'data/{env_name}'
+        env_logs_dir = f'{env_dir}/Logs'
+        env_model_dir = f'{env_dir}/Models'
+
+        # Create and wrap the environment
+        env = TextWorldEnv(f'data/Environments/{env_name}', Environment['x_destination'], Environment['y_destination'])
+        env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+
+        # Evaluate the model
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False, callback=None, reward_threshold=None, return_episode_rewards=False)
+        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
+    return
+
+def eval_by_interaction(model, env, roue_instruction):
+    # use the route instruction sentence sequences to choose the consecutive actions with the environment and get the reward
+    env_name = env['env']
+    env_dir = f'data/{env_name}'
+    env_logs_dir = f'{env_dir}/Logs'
+
+    # Create and wrap the environment
+    env = TextWorldEnv(f'data/Environments/{env_name}', env['x_destination'], env['y_destination'])
+    env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+
+    # reset the environment
+    observation, info = env.reset()
+    # split the route instruction into sentences
+    sentences = route_instruction.split('. ')
+    for sentence in sentences:
+        action, _ = model.predict(observation, deterministic=False)
+        observation, reward, terminate, truncated, info = env.step(action)
+        print(f"Action: {action}, Reward: {reward}")
+
+
+
+
 
 
 if __name__ == "__main__":
@@ -253,15 +305,30 @@ if __name__ == "__main__":
 
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining
+    pretraining_set = all_envs[0]['lettertext']
+    print(pretraining_set)
     all_env_pretraining = []
-    for env in all_envs:
-        if env['lettertext'] in pretraining_set:
-            all_env_pretraining.append(env)
+    # for env in all_envs:
+    #     if env['lettertext'] in pretraining_set:
+    #         all_env_pretraining.append(env)
+    #
+    # print(len(all_env_pretraining))
+    #
+    # # learn the environments in all_env_pretraining
+    # model = learn_envs(all_env_pretraining)
 
-    print(len(all_env_pretraining))
+    # evaluate the model
+    model = PPO.load('data/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8/Models/final_model')
+    # evaluate_model(model, all_envs)
 
-    # learn the environments in all_env_pretraining
-    model = learn_envs(all_env_pretraining)
+    route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
+    eval_by_interaction(model, all_envs[0], route_instruction)
+
+
+
+
+
+
 
 
 

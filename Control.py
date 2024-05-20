@@ -294,16 +294,24 @@ def eval_by_interaction(model, env, roue_instruction):
     # split the route instruction into sentences
     sentences = route_instruction.split('. ')
     for sentence in sentences:
-        action, _ = model.predict(observation, deterministic=False)
-        # action = text_to_action(sentence)
+        # action, _ = model.predict(observation, deterministic=False)
+        action = text_to_action(sentence)
         observation, reward, terminate, truncated, _ = env.step(action)
+        # extract the probability distribution of the actions
         b = predict_proba(model, observation)
         print(b)
+        # extract the probability of the action
+        prob = b[0][action]
 
-        print(f"Action: {action}, Reward: {reward}, Terminate: {terminate}, Truncated: {truncated}")
+        # add the probability of the action to the episode reward
+        episode_reward += prob
+
+        print(f"Terminate: {terminate}, Accumulated Probability: {round(episode_reward,2)}")
         if terminate or truncated:
             print("Terminating the episode")
             break
+
+
 
 
 def predict_proba(model, state):
@@ -343,3 +351,4 @@ if __name__ == "__main__":
 
     route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
     eval_by_interaction(model, all_envs[0], route_instruction)
+

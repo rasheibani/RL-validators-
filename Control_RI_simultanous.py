@@ -10,6 +10,10 @@ import re
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, \
@@ -21,6 +25,61 @@ import Pretraining
 from stable_baselines3.common.policies import obs_as_tensor
 import xml.etree.ElementTree as ET
 import os
+class CustomFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Box):
+        super(CustomFeatureExtractor, self).__init__(observation_space, features_dim=64)
+        n_actions = 8
+        n_instructions = 15
+        n_total_features = n_actions + n_instructions + 1
+
+        self.observation_flat_dim = n_total_features
+
+        # Define the feature extractor network
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(self.observation_flat_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        # flatten the observations
+        observations_flat = observations.view(observations.size(0), self.observation_flat_dim)
+
+        return self.feature_extractor(observations_flat)
+
+
+
+class CustomPolicy(ActorCriticPolicy):
+    def __init__(self, observation_space, action_space, lr_schedule, *args, **kwargs):
+        super(CustomPolicy, self).__init__(observation_space, action_space, lr_schedule,
+                                           features_extractor_class=CustomFeatureExtractor, *args, **kwargs)
+
+    def forward(self, obs: torch.Tensor, deterministic: bool = False):
+        admissible_actions = obs[:, :8]  # Extract the admissible actions
+        route_instructions = obs[:, 8:23]  # Extract the route instructions
+        instruction_index = obs[:, 23]  # Extract the instruction index
+
+        valid_actions_mask = admissible_actions > 0
+        features = self.extract_features(obs)
+        distribution = self._get_action_dist_from_latent(features)
+        admissible_actions_prob = distribution.log_prob(admissible_actions)
+
+        # convert the probablity of actions that are not admissible to -inf
+        admissible_actions_prob[~valid_actions_mask] = float('-inf')
+
+        if deterministic:
+            action = torch.argmax(admissible_actions_prob, dim=1)
+        else:
+            # sample from admissible actions where the probability is not -inf
+            action = torch.multinomial(admissible_actions_prob.exp(), 1)
+
+        # get the probability of the selected action
+        prob_of_selected_action = admissible_actions_prob.gather(1, action)
+
+        values = self.value_net(features)
+        return action, values, prob_of_selected_action
+
 
 
 def extract_coordinates(game_state):
@@ -134,11 +193,7 @@ class TextWorldEnv(gym.Env):
 
         # The observation space is vector with 8 elements binary, each element representing a direction, 1 if the
         # direction is admissible, 0 otherwise
-        self.observation_space = spaces.Dict({
-            'admissible_actions': spaces.Box(low=0, high=1, shape=(8,), dtype=np.int32),
-            'route_instructions': spaces.Box(low=0, high=8, shape=(15,), dtype=np.int32),
-            'instruction_index': spaces.Box(low=0, high=15, shape=(1,), dtype=np.int32),
-        })
+        self.observation_space = spaces.Box(low=0, high=8, shape=(24,), dtype=np.int32)
         self.route_instructions = []
         self.instruction_index = 0
 
@@ -151,12 +206,13 @@ class TextWorldEnv(gym.Env):
         self.route_instructions = self.generate_route_instructions()
         self.visited_states_actions.clear()
         self.instruction_index = 0
-        observation ={
-            'admissible_actions': admissible_actions_to_observation(admissible_actions),
-            'route_instructions': np.pad(self.route_instructions,
-                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-            'instruction_index': np.array([self.instruction_index])
-        }
+        observation = np.concatenate((
+            admissible_actions_to_observation(admissible_actions),
+            np.pad(self.route_instructions,
+                   (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+            np.array([self.instruction_index])
+        ))
+        print(observation)
 
         return observation, {}
 
@@ -171,12 +227,13 @@ class TextWorldEnv(gym.Env):
             terminate = False
             truncated = False
             self.instruction_index = self.instruction_index + 1
-            observation = {
-                'admissible_actions': admissible_actions_to_observation(admissible_actions),
-                'route_instructions': np.pad(self.route_instructions,
-                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                'instruction_index': np.array([self.instruction_index])
-            }
+            observation = np.concatenate((
+                admissible_actions_to_observation(admissible_actions),
+                np.pad(self.route_instructions,
+                       (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                np.array([self.instruction_index])
+            ))
+            print(observation)
 
             return observation, reward, terminate, truncated, {}
         else:
@@ -199,12 +256,14 @@ class TextWorldEnv(gym.Env):
                 reward = -0.1
                 terminate = False
             truncated = False
-            observation = {
-                'admissible_actions': admissible_actions_to_observation(admissible_action),
-                'route_instructions': np.pad(self.route_instructions,
-                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                'instruction_index': np.array([self.instruction_index])
-            }
+            observation = np.concatenate((
+                admissible_actions_to_observation(admissible_action),
+                np.pad(self.route_instructions,
+                       (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                np.array([self.instruction_index])
+            ))
+
+            print(observation)
 
             return observation, reward, terminate, truncated, {}
 
@@ -275,7 +334,7 @@ def learn_envs(environments):
 
         # Load model if it exists, otherwise initialize it
         if model is None:
-            model = PPO(policy="MultiInputPolicy", env=env, verbose=1, seed=0, device='cuda')
+            model = PPO(CustomPolicy, env=env, verbose=1, seed=0, device='cuda')
         else:
             model.set_env(env)
 

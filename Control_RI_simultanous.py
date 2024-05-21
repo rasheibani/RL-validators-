@@ -94,7 +94,7 @@ def sentence_from_action(action):
     elif action == 7:
         return "go southwest"
     else:
-        return "go north"
+        return "look"
 
 
 def extract_area_id(feedback):
@@ -134,7 +134,13 @@ class TextWorldEnv(gym.Env):
 
         # The observation space is vector with 8 elements binary, each element representing a direction, 1 if the
         # direction is admissible, 0 otherwise
-        self.observation_space = spaces.Box(low=0, high=1, shape=(8,), dtype=np.int32)
+        self.observation_space = spaces.Dict({
+            'admissible_actions': spaces.Box(low=0, high=1, shape=(8,), dtype=np.int32),
+            'route_instructions': spaces.Box(low=0, high=8, shape=(15,), dtype=np.int32),
+            'instruction_index': spaces.Box(low=0, high=15, shape=(1,), dtype=np.int32),
+        })
+        self.route_instructions = []
+        self.instruction_index = 0
 
     def reset(self, **kwargs):
         self.game_state = self.env.reset()
@@ -142,7 +148,16 @@ class TextWorldEnv(gym.Env):
         self.x, self.y = extract_coordinates(self.game_state.feedback)
         admissible_actions = get_admissible_actions(self.game_state.feedback)
         observation = admissible_actions_to_observation(admissible_actions)
+        self.route_instructions = self.generate_route_instructions()
         self.visited_states_actions.clear()
+        self.instruction_index = 0
+        observation ={
+            'admissible_actions': admissible_actions_to_observation(admissible_actions),
+            'route_instructions': np.pad(self.route_instructions,
+                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+            'instruction_index': np.array([self.instruction_index])
+        }
+
         return observation, {}
 
     def step(self, action):
@@ -155,7 +170,14 @@ class TextWorldEnv(gym.Env):
             reward = -1
             terminate = False
             truncated = False
-            observation = admissible_actions_to_observation(admissible_actions)
+            self.instruction_index = self.instruction_index + 1
+            observation = {
+                'admissible_actions': admissible_actions_to_observation(admissible_actions),
+                'route_instructions': np.pad(self.route_instructions,
+                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                'instruction_index': np.array([self.instruction_index])
+            }
+
             return observation, reward, terminate, truncated, {}
         else:
             self.game_state, reward, done_dummy = self.env.step(sentence)
@@ -167,6 +189,8 @@ class TextWorldEnv(gym.Env):
             target_x = np.float64(self.x_destination)
             target_y = np.float64(self.y_destination)
 
+            self.instruction_index = self.instruction_index + 1
+
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
                 reward = 500
                 terminate = True
@@ -175,7 +199,12 @@ class TextWorldEnv(gym.Env):
                 reward = -0.1
                 terminate = False
             truncated = False
-            observation = admissible_actions_to_observation(admissible_action)
+            observation = {
+                'admissible_actions': admissible_actions_to_observation(admissible_action),
+                'route_instructions': np.pad(self.route_instructions,
+                                         (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                'instruction_index': np.array([self.instruction_index])
+            }
 
             return observation, reward, terminate, truncated, {}
 
@@ -187,6 +216,13 @@ class TextWorldEnv(gym.Env):
 
     def __len__(self):
         return 1  # only one game running at a time
+
+    def generate_route_instructions(self):
+        instructions = [text_to_action(sentence) for sentence in RI.split('. ') if sentence != 'Arrive at destination!']
+        # convert the instructions to a list of integers with dtype int32
+        instructions = np.array(instructions, dtype=np.int32)
+        return instructions
+
 
 
 def load_all_envs(RIxml_address='data/RouteInstructions/Route_Instructions_LongestShortestV8.xml'):
@@ -239,7 +275,7 @@ def learn_envs(environments):
 
         # Load model if it exists, otherwise initialize it
         if model is None:
-            model = PPO(policy="MlpPolicy", env=env, verbose=1, seed=0, device='cuda')
+            model = PPO(policy="MultiInputPolicy", env=env, verbose=1, seed=0, device='cuda')
         else:
             model.set_env(env)
 

@@ -180,6 +180,8 @@ class TextWorldEnv(gym.Env):
     def __init__(self, game_address, x_destination, y_destination):
         self.y = None
         self.x = None
+        self.x_origin = None
+        self.y_origin = None
         self.is_async = False
         self.game_address = game_address
         self.env = textworld.start(game_address)
@@ -191,6 +193,11 @@ class TextWorldEnv(gym.Env):
         self.x_destination = x_destination
         self.y_destination = y_destination
 
+        self.dist_from_origin_to_destination = None
+
+        self.letsprint = True
+        self.exploration_threshold = 5
+
         # The observation space is vector with 8 elements binary, each element representing a direction, 1 if the
         # direction is admissible, 0 otherwise
         self.observation_space = spaces.Box(low=0, high=8, shape=(24,), dtype=np.int32)
@@ -201,9 +208,17 @@ class TextWorldEnv(gym.Env):
         self.game_state = self.env.reset()
         self.game_state, _, _ = self.env.step("look")
         self.x, self.y = extract_coordinates(self.game_state.feedback)
-        admissible_actions = get_admissible_actions(self.game_state.feedback)
-        observation = admissible_actions_to_observation(admissible_actions)
-        self.route_instructions = self.generate_route_instructions()
+        self.x_origin = self.x
+        self.y_origin = self.y
+        while True:
+            admissible_actions = get_admissible_actions(self.game_state.feedback)
+            observation = admissible_actions_to_observation(admissible_actions)
+            self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
+            self.dist_from_origin_to_destination = np.sqrt((self.x_destination - self.x_origin) ** 2 + (
+                    self.y_destination - self.y_origin) ** 2)
+            if len(self.route_instructions) > 0:
+                break
+            print(f"Distance from origin to destination: {self.dist_from_origin_to_destination}")
         self.visited_states_actions.clear()
         self.instruction_index = 0
         observation = np.concatenate((
@@ -212,7 +227,7 @@ class TextWorldEnv(gym.Env):
                    (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
             np.array([self.instruction_index])
         ))
-        print(observation)
+        print(observation) if self.letsprint and False else None
 
         return observation, {}
 
@@ -233,12 +248,26 @@ class TextWorldEnv(gym.Env):
                        (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
                 np.array([self.instruction_index])
             ))
-            print(observation)
+            print(''f'')
 
             return observation, reward, terminate, truncated, {}
         else:
             self.game_state, reward, done_dummy = self.env.step(sentence)
             self.x, self.y = extract_coordinates(self.game_state.feedback)
+            if self.instruction_index > len(self.route_instructions) + self.exploration_threshold:
+                distance = np.sqrt((self.x - self.x_destination) ** 2 + (self.y - self.y_destination) ** 2)
+                reward = 0
+                terminate = False
+                truncated = True
+                observation = np.concatenate((
+                    admissible_actions_to_observation(admissible_actions),
+                    np.pad(self.route_instructions,
+                           (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                    np.array([self.instruction_index])
+                ))
+                # print(observation, 'truncated') if self.letsprint else None
+                return observation, reward, terminate, truncated, {}
+
             feedback_embedding = feedback_to_embedding(self.game_state.feedback)
             self.last_feedback_embedding = feedback_embedding
             admissible_action = get_admissible_actions(self.game_state.feedback)
@@ -252,8 +281,14 @@ class TextWorldEnv(gym.Env):
                 reward = 500
                 terminate = True
                 self.counter = self.counter + 1
+                # print with green color
+                # print(f'\033[92m{self.instruction_index}\033[0m')
+
             else:
-                reward = -0.1
+                # shape reward based on the distance to the target
+                distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
+                reward = 0
+                reward = np.clip(reward, 0, 500)
                 terminate = False
             truncated = False
             observation = np.concatenate((
@@ -263,7 +298,6 @@ class TextWorldEnv(gym.Env):
                 np.array([self.instruction_index])
             ))
 
-            print(observation)
 
             return observation, reward, terminate, truncated, {}
 
@@ -277,10 +311,26 @@ class TextWorldEnv(gym.Env):
         return 1  # only one game running at a time
 
     def generate_route_instructions(self):
-        instructions = [text_to_action(sentence) for sentence in RI.split('. ') if sentence != 'Arrive at destination!']
-        # convert the instructions to a list of integers with dtype int32
-        instructions = np.array(instructions, dtype=np.int32)
-        return instructions
+        # generate a random number form 1 to 15
+        n_instructions = np.random.randint(1, 16)
+        # run the env for n_instructions steps and collect the route instructions
+        # make sure that route instructions are from the admissible actions
+        route_instructions = []
+        for i in range(n_instructions):
+            admissible_actions = get_admissible_actions(self.game_state.feedback)
+            instruction = np.random.choice(admissible_actions)
+            route_instructions.append(instruction)
+            self.game_state, _, _ = self.env.step(instruction)
+
+        # convert the elements of the route instructions to integers
+        route_instructions = [text_to_action(instruction) for instruction in route_instructions]
+
+        # collect the destination x y
+        self.x_destination, self.y_destination = extract_coordinates(self.game_state.feedback)
+        # rest the env
+        self.game_state = self.env.reset()
+        self.game_state, _, _ = self.env.step("look")
+        return route_instructions, self.x_destination, self.y_destination
 
 
 
@@ -366,7 +416,7 @@ def evaluate_model(model, environments):
     return
 
 
-def eval_by_interaction(model, env, roue_instruction):
+def eval_by_interaction(model, env, route_instruction):
     # use the route instruction sentence sequences to choose the consecutive actions with the environment and get the reward
     env_name = env['env']
     env_dir = f'data/{env_name}'
@@ -388,7 +438,9 @@ def eval_by_interaction(model, env, roue_instruction):
         observation, reward, terminate, truncated, _ = env.step(action)
         # extract the probability distribution of the actions
         b = predict_proba(model, observation)
-        print(b)
+        # print b with only 2 decimal places
+        b = np.round(b, 3)
+        print(f"Action: {sentence}, Probability Distribution: {b}")
         # extract the probability of the action
         prob = b[0][action]
 
@@ -406,6 +458,8 @@ def predict_proba(model, state):
     dis = model.policy.get_distribution(obs)
     probs = dis.distribution.probs
     probs_np = probs.detach().cpu().numpy()
+    # normalize the probabilities
+    probs_np = probs_np / np.sum(probs_np)
     return probs_np
 
 
@@ -421,7 +475,7 @@ if __name__ == "__main__":
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining
     pretraining_set = all_envs[0]['lettertext']
-    print(all_envs[0])
+    # print(all_envs[0])
     all_env_pretraining = []
     for env in all_envs:
         if env['lettertext'] in pretraining_set:
@@ -437,4 +491,6 @@ if __name__ == "__main__":
     # evaluate_model(model, all_envs)
 
     route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
+    another_route_instruction = 'go east. go south. go west. go southwest. Arrive at destination!'
     eval_by_interaction(model, all_envs[0], route_instruction)
+    eval_by_interaction(model, all_envs[0], another_route_instruction)

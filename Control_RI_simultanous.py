@@ -208,19 +208,27 @@ class TextWorldEnv(gym.Env):
     def reset(self, **kwargs):
         self.game_state = self.env.reset()
         self.game_state, _, _ = self.env.step("look")
+        admissible_actions = get_admissible_actions(self.game_state.feedback)
+        observation = admissible_actions_to_observation(admissible_actions)
         self.x, self.y = extract_coordinates(self.game_state.feedback)
         self.x_origin = self.x
         self.y_origin = self.y
-        while True:
-            admissible_actions = get_admissible_actions(self.game_state.feedback)
-            observation = admissible_actions_to_observation(admissible_actions)
-            self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
-            self.dist_from_origin_to_destination = np.sqrt((self.x_destination - self.x_origin) ** 2 + (
-                    self.y_destination - self.y_origin) ** 2)
-            if len(self.route_instructions) > 0:
-                break
+        if 'route_instructions' in kwargs:
+            rti = kwargs['route_instructions']
+            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
+            self.route_instructions = [text_to_action(instruction) for instruction in rti.split('. ')]
+        else:
+            while True:
+                admissible_actions = get_admissible_actions(self.game_state.feedback)
+                observation = admissible_actions_to_observation(admissible_actions)
+                self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions(**kwargs)
+                if len(self.route_instructions) > 0:
+                    break
+        self.dist_from_origin_to_destination = np.sqrt((self.x_destination - self.x_origin) ** 2 + (
+                self.y_destination - self.y_origin) ** 2)
         self.visited_states_actions.clear()
         self.instruction_index = 0
+        print(self.route_instructions)
         observation = np.concatenate((
             admissible_actions_to_observation(admissible_actions),
             np.pad(self.route_instructions,
@@ -308,18 +316,21 @@ class TextWorldEnv(gym.Env):
     def __len__(self):
         return 1  # only one game running at a time
 
-    def generate_route_instructions(self):
+    def generate_route_instructions(self, **kwargs):
+
         # generate a random number form 1 to 15
-        n_instructions = np.random.randint(1, 2)
+        n_instructions = kwargs.get('n_instructions', np.random.randint(1, 2))
+        print(f'Number of Instructions: {n_instructions}')
         # run the env for n_instructions steps and collect the route instructions
         # make sure that route instructions are from the admissible actions
         route_instructions = []
         for i in range(n_instructions):
             admissible_actions = get_admissible_actions(self.game_state.feedback)
+            print(f'Admissible Actions: {admissible_actions}')
             instruction = np.random.choice(admissible_actions)
+            print(f'Instruction: {instruction}')
             route_instructions.append(instruction)
             self.game_state, _, _ = self.env.step(instruction)
-
 
         # convert the elements of the route instructions to integers
         route_instructions = [text_to_action(instruction) for instruction in route_instructions]
@@ -331,6 +342,10 @@ class TextWorldEnv(gym.Env):
         self.game_state, _, _ = self.env.step("look")
         return route_instructions, self.x_destination, self.y_destination
 
+    def get_destination_from_route_instructions(self, route_instructions):
+        for instruction in route_instructions:
+            self.game_state, _, _ = self.env.step(instruction)
+        return extract_coordinates(self.game_state.feedback)
 
 
 def load_all_envs(RIxml_address='data/RouteInstructions/Route_Instructions_LongestShortestV8.xml'):
@@ -453,9 +468,12 @@ def eval_by_interaction(model, env, route_instruction):
 
 
 def predict_proba(model, state):
+    print(state)
     obs = model.policy.obs_to_tensor(state)[0]
+    print(obs)
     dis = model.policy.get_distribution(obs)
     probs = dis.distribution.probs
+    print (probs)
     probs_np = probs.detach().cpu().numpy()
     # normalize the probabilities
     probs_np = probs_np / np.sum(probs_np)
@@ -475,23 +493,30 @@ if __name__ == "__main__":
     pretraining_set = Pretraining.Pretraining
     pretraining_set = all_envs[0]['lettertext']
     # select the pretraining environments if the name is simplest_simplest
-    pretraining_set = [env['lettertext'] for env in all_envs if env['lettertext'] == 'simplest_simplest']
-    print(pretraining_set)
-    all_env_pretraining = []
-    for env in all_envs:
-        if env['lettertext'] in pretraining_set:
-            all_env_pretraining.append(env)
-
-    print(len(all_env_pretraining))
-
-    # learn the environments in all_env_pretraining
-    model = learn_envs(all_env_pretraining)
+    # pretraining_set = [env['lettertext'] for env in all_envs if env['lettertext'] == 'simplest_simplest']
+    # print(pretraining_set)
+    # all_env_pretraining = []
+    # for env in all_envs:
+    #     if env['lettertext'] in pretraining_set:
+    #         all_env_pretraining.append(env)
+    #
+    # print(len(all_env_pretraining))
+    #
+    # # learn the environments in all_env_pretraining
+    # model = learn_envs(all_env_pretraining)
 
     # evaluate the model
-    model = PPO.load('data/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8/Models/final_model')
+    model = PPO.load('data/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/best_model.zip')
+    env = TextWorldEnv('data/Environments/simplest_simplest_546025.6070834016_996382.4069940181.z8', 996382.4069940181, 996382.4069940181)
+    # change the seed of np random generator
+    np.random.seed(0)
     # evaluate_model(model, all_envs)
 
     route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
-    another_route_instruction = 'go east. go south. go west. go southwest. Arrive at destination!'
-    eval_by_interaction(model, all_envs[0], route_instruction)
-    eval_by_interaction(model, all_envs[0], another_route_instruction)
+    another_route_instruction = 'go west'
+    observation, _ = env.reset(route_instructions = another_route_instruction)
+    # eval_by_interaction(model, all_envs[0], route_instruction)
+    print(f'observation: {observation}')
+    b = predict_proba(model, observation)
+
+

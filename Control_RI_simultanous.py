@@ -353,9 +353,10 @@ def learn_envs(environments):
     model = None
     for i, Environment in enumerate(environments):
         env_name = Environment['env']
-        env_dir = f'data/{env_name}'
+        env_dir = f'data/trained/{env_name}'
         env_logs_dir = f'{env_dir}/Logs'
         env_model_dir = f'{env_dir}/Models'
+        print(f"Training on {env_name}")
 
         if env_name == 'simplest_simplest_546025.6070834016_996382.4069940181.z8':
             n_instructions = 1
@@ -397,7 +398,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=50000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=500, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -462,11 +463,14 @@ def eval_by_interaction(model, env, route_instruction):
 def load_envs():
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining25
+    pretraining_set.extend(Pretraining.Pretraining50)
+    pretraining_set.extend(Pretraining.Pretraining75)
+    pretraining_set.extend(Pretraining.Pretraining100)
     # search in data/Environment and see if any *.z8 files begin with pretraining_set element
     all_env_pretraining = []
     for env in pretraining_set:
         for file in os.listdir('data/Environments'):
-            if file.startswith(env):
+            if file.startswith(env) and file.endswith('.z8'):
                 env_name = file
                 # split the name by _
                 env_name = env_name.split('_')
@@ -502,7 +506,7 @@ if __name__ == "__main__":
     model = learn_envs(all_env_pretraining)
 
     # evaluate the model
-    model = PPO.load('data/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/best_model.zip')
+    model = PPO.load('data/trained/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/final_model.zip')
     env = TextWorldEnv('data/Environments/simplest_simplest_546025.6070834016_996382.4069940181.z8', 996382.4069940181, 996382.4069940181)
     # change the seed of np random generator
     np.random.seed(0)

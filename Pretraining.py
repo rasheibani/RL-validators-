@@ -1,5 +1,6 @@
 # 0-0.25
-Pretraining = ["A_Average-Regular_Approach2",
+Pretraining = ["simplest_simplest",
+    "A_Average-Regular_Approach2",
                "ZOZ_perspire_Approach2",
                "HI_Average-Regular_Approach2",
                "ZSM_perspire_Approach2",

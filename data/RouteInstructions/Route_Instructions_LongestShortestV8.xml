@@ -51259,4 +51259,7 @@
 			</style>
 		</route>
 	</letter>
+	<letter name="simplest_simplest">
+		<route x_origin="546025.6070834016" y_origin="996382.4069940181" x_destination="502844.0" y_destination="1723917.7280151946"/>
+	</letter>
 </letters>

@@ -1,4 +1,5 @@
-Environment = 'data/Environments/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8'
+# Environment = 'data/Environments/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8'
+Environment = 'data/Environments/test.zblorb'
 RI = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
 
 import textworld.gym  # Register the gym environments
@@ -196,7 +197,7 @@ class TextWorldEnv(gym.Env):
         self.dist_from_origin_to_destination = None
 
         self.letsprint = True
-        self.exploration_threshold = 5
+        self.exploration_threshold = 0
 
         # The observation space is vector with 8 elements binary, each element representing a direction, 1 if the
         # direction is admissible, 0 otherwise
@@ -218,7 +219,6 @@ class TextWorldEnv(gym.Env):
                     self.y_destination - self.y_origin) ** 2)
             if len(self.route_instructions) > 0:
                 break
-            print(f"Distance from origin to destination: {self.dist_from_origin_to_destination}")
         self.visited_states_actions.clear()
         self.instruction_index = 0
         observation = np.concatenate((
@@ -227,11 +227,12 @@ class TextWorldEnv(gym.Env):
                    (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
             np.array([self.instruction_index])
         ))
-        print(observation) if self.letsprint and False else None
-
         return observation, {}
 
     def step(self, action):
+        # if there is this sentence "You can't go that way."in the feedback, then execute a look command
+        if "You can't go that way." in self.game_state.feedback:
+            self.game_state, _, _ = self.env.step("look")
         # check if the action is within the admissible actions
         admissible_actions = get_admissible_actions(self.game_state.feedback)
         sentence = sentence_from_action(action)
@@ -241,7 +242,6 @@ class TextWorldEnv(gym.Env):
             reward = -1
             terminate = False
             truncated = False
-            self.instruction_index = self.instruction_index + 1
             observation = np.concatenate((
                 admissible_actions_to_observation(admissible_actions),
                 np.pad(self.route_instructions,
@@ -252,21 +252,8 @@ class TextWorldEnv(gym.Env):
 
             return observation, reward, terminate, truncated, {}
         else:
-            self.game_state, reward, done_dummy = self.env.step(sentence)
+            self.game_state, _, done_dummy = self.env.step(sentence)
             self.x, self.y = extract_coordinates(self.game_state.feedback)
-            if self.instruction_index > len(self.route_instructions) + self.exploration_threshold:
-                distance = np.sqrt((self.x - self.x_destination) ** 2 + (self.y - self.y_destination) ** 2)
-                reward = 0
-                terminate = False
-                truncated = True
-                observation = np.concatenate((
-                    admissible_actions_to_observation(admissible_actions),
-                    np.pad(self.route_instructions,
-                           (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                    np.array([self.instruction_index])
-                ))
-                # print(observation, 'truncated') if self.letsprint else None
-                return observation, reward, terminate, truncated, {}
 
             feedback_embedding = feedback_to_embedding(self.game_state.feedback)
             self.last_feedback_embedding = feedback_embedding
@@ -275,16 +262,28 @@ class TextWorldEnv(gym.Env):
             target_x = np.float64(self.x_destination)
             target_y = np.float64(self.y_destination)
 
-            self.instruction_index = self.instruction_index + 1
-
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
+
                 reward = 500
                 terminate = True
                 self.counter = self.counter + 1
                 # print with green color
                 # print(f'\033[92m{self.instruction_index}\033[0m')
-
             else:
+                if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold-1:
+                    distance = np.sqrt((self.x - self.x_destination) ** 2 + (self.y - self.y_destination) ** 2)
+                    reward = -1
+                    terminate = False
+                    truncated = True
+                    observation = np.concatenate((
+                        admissible_actions_to_observation(admissible_actions),
+                        np.pad(self.route_instructions,
+                               (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+                        np.array([self.instruction_index])
+                    ))
+                    # print(observation, 'truncated') if self.letsprint else None
+                    self.instruction_index = self.instruction_index + 1
+                    return observation, reward, terminate, truncated, {}
                 # shape reward based on the distance to the target
                 distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
                 reward = 0
@@ -297,8 +296,7 @@ class TextWorldEnv(gym.Env):
                        (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
                 np.array([self.instruction_index])
             ))
-
-
+            self.instruction_index = self.instruction_index + 1
             return observation, reward, terminate, truncated, {}
 
     def render(self):
@@ -312,7 +310,7 @@ class TextWorldEnv(gym.Env):
 
     def generate_route_instructions(self):
         # generate a random number form 1 to 15
-        n_instructions = np.random.randint(1, 16)
+        n_instructions = np.random.randint(1, 2)
         # run the env for n_instructions steps and collect the route instructions
         # make sure that route instructions are from the admissible actions
         route_instructions = []
@@ -321,6 +319,7 @@ class TextWorldEnv(gym.Env):
             instruction = np.random.choice(admissible_actions)
             route_instructions.append(instruction)
             self.game_state, _, _ = self.env.step(instruction)
+
 
         # convert the elements of the route instructions to integers
         route_instructions = [text_to_action(instruction) for instruction in route_instructions]
@@ -475,7 +474,9 @@ if __name__ == "__main__":
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining
     pretraining_set = all_envs[0]['lettertext']
-    # print(all_envs[0])
+    # select the pretraining environments if the name is simplest_simplest
+    pretraining_set = [env['lettertext'] for env in all_envs if env['lettertext'] == 'simplest_simplest']
+    print(pretraining_set)
     all_env_pretraining = []
     for env in all_envs:
         if env['lettertext'] in pretraining_set:

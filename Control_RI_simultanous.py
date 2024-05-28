@@ -178,9 +178,10 @@ def admissible_actions_to_observation(admissible_actions):
 
 
 class TextWorldEnv(gym.Env):
-    def __init__(self, game_address, x_destination, y_destination):
+    def __init__(self, game_address, x_destination, y_destination, n_instructions=1):
         self.y = None
         self.x = None
+        self.n_instructions = n_instructions
         self.x_origin = None
         self.y_origin = None
         self.is_async = False
@@ -228,7 +229,6 @@ class TextWorldEnv(gym.Env):
                 self.y_destination - self.y_origin) ** 2)
         self.visited_states_actions.clear()
         self.instruction_index = 0
-        print(self.route_instructions)
         observation = np.concatenate((
             admissible_actions_to_observation(admissible_actions),
             np.pad(self.route_instructions,
@@ -319,16 +319,16 @@ class TextWorldEnv(gym.Env):
     def generate_route_instructions(self, **kwargs):
 
         # generate a random number form 1 to 15
-        n_instructions = kwargs.get('n_instructions', np.random.randint(1, 2))
-        print(f'Number of Instructions: {n_instructions}')
+        n_instructions = self.n_instructions
+        # print(f'Number of Instructions: {n_instructions}')
         # run the env for n_instructions steps and collect the route instructions
         # make sure that route instructions are from the admissible actions
         route_instructions = []
         for i in range(n_instructions):
             admissible_actions = get_admissible_actions(self.game_state.feedback)
-            print(f'Admissible Actions: {admissible_actions}')
+            # print(f'Admissible Actions: {admissible_actions}')
             instruction = np.random.choice(admissible_actions)
-            print(f'Instruction: {instruction}')
+            # print(f'Instruction: {instruction}')
             route_instructions.append(instruction)
             self.game_state, _, _ = self.env.step(instruction)
 
@@ -348,26 +348,6 @@ class TextWorldEnv(gym.Env):
         return extract_coordinates(self.game_state.feedback)
 
 
-def load_all_envs(RIxml_address='data/RouteInstructions/Route_Instructions_LongestShortestV8.xml'):
-    envs = []
-    tree = ET.parse(RIxml_address)
-    root = tree.getroot()
-    for letter in root.findall('letter'):
-        lettertext = letter.get('name')
-        for route in letter.findall('route'):
-
-            # return *.z8 files in the directory 'data/Environments' if the beginning of the file name is the same as
-            # the letter text
-            for file in os.listdir('data/Environments'):
-                if file.startswith(lettertext) and file.endswith('.z8'):
-                    envs.append({'lettertext': lettertext,
-                                 'x_origin': route.get('x_origin'),
-                                 'y_origin': route.get('y_origin'),
-                                 'x_destination': route.get('x_destination'),
-                                 'y_destination': route.get('y_destination'),
-                                 'env': file})
-    return envs
-
 
 def learn_envs(environments):
     model = None
@@ -377,8 +357,20 @@ def learn_envs(environments):
         env_logs_dir = f'{env_dir}/Logs'
         env_model_dir = f'{env_dir}/Models'
 
+        if env_name == 'simplest_simplest_546025.6070834016_996382.4069940181.z8':
+            n_instructions = 1
+        elif env_name in Pretraining.Pretraining25:
+            n_instructions = 2
+        elif env_name in Pretraining.Pretraining50:
+            n_instructions = 4
+        elif env_name in Pretraining.Pretraining75:
+            n_instructions = 7
+        elif env_name in Pretraining.Pretraining100:
+            n_instructions = 10
+
         # Create and wrap the environment
-        env = TextWorldEnv(f'data/Environments/{env_name}', Environment['x_destination'], Environment['y_destination'])
+        env = TextWorldEnv(f'data/Environments/{env_name}',
+                           Environment['x_destination'], Environment['y_destination'], n_instructions=n_instructions)
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
         reward_threshold = 490
@@ -389,7 +381,7 @@ def learn_envs(environments):
             eval_env=env,
             best_model_save_path=env_model_dir,
             log_path=env_logs_dir,
-            eval_freq=20000,
+            eval_freq=50000,
             deterministic=False,
             render=False,
             callback_after_eval=callbackOnNoImprovement,
@@ -402,8 +394,10 @@ def learn_envs(environments):
         else:
             model.set_env(env)
 
+        n_instructions = i + 1
+
         # Learn the model
-        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=50000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -465,7 +459,24 @@ def eval_by_interaction(model, env, route_instruction):
         if terminate or truncated:
             print("Terminating the episode")
             break
-
+def load_envs():
+    # load list of environments from pretraining
+    pretraining_set = Pretraining.Pretraining25
+    # search in data/Environment and see if any *.z8 files begin with pretraining_set element
+    all_env_pretraining = []
+    for env in pretraining_set:
+        for file in os.listdir('data/Environments'):
+            if file.startswith(env):
+                env_name = file
+                # split the name by _
+                env_name = env_name.split('_')
+                x_destination = float(env_name[-2])
+                y_destination = float(env_name[-1].split('.')[0])
+                all_env_pretraining.append({'env': file
+                                            , 'x_destination': x_destination
+                                            , 'y_destination': y_destination})
+    print(all_env_pretraining)
+    return all_env_pretraining
 
 def predict_proba(model, state):
     print(state)
@@ -482,28 +493,13 @@ def predict_proba(model, state):
 
 if __name__ == "__main__":
     nlp = spacy.load("en_core_web_sm")
-    all_envs = load_all_envs()
-    print(len(all_envs))
-
-    # all_envs = all_envs[1:40]
-    # print(all_envs)
     print(torch.cuda.is_available())
 
-    # load list of environments from pretraining
-    pretraining_set = Pretraining.Pretraining
-    pretraining_set = all_envs[0]['lettertext']
-    # select the pretraining environments if the name is simplest_simplest
-    # pretraining_set = [env['lettertext'] for env in all_envs if env['lettertext'] == 'simplest_simplest']
-    # print(pretraining_set)
-    # all_env_pretraining = []
-    # for env in all_envs:
-    #     if env['lettertext'] in pretraining_set:
-    #         all_env_pretraining.append(env)
-    #
-    # print(len(all_env_pretraining))
-    #
-    # # learn the environments in all_env_pretraining
-    # model = learn_envs(all_env_pretraining)
+    # load the environments
+    all_env_pretraining = load_envs()
+
+    # learn the environments in all_env_pretraining
+    model = learn_envs(all_env_pretraining)
 
     # evaluate the model
     model = PPO.load('data/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/best_model.zip')

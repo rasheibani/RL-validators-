@@ -229,10 +229,14 @@ class TextWorldEnv(gym.Env):
                 self.y_destination - self.y_origin) ** 2)
         self.visited_states_actions.clear()
         self.instruction_index = 0
+        if len(self.route_instructions) < 15:
+            route_instruction_padded = np.pad(self.route_instructions,
+                                              (0, 15 - len(self.route_instructions)), 'constant', constant_values=8)
+        else:
+            route_instruction_padded = self.route_instructions[:15]
         observation = np.concatenate((
             admissible_actions_to_observation(admissible_actions),
-            np.pad(self.route_instructions,
-                   (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
+            route_instruction_padded,
             np.array([self.instruction_index])
         ))
         return observation, {}
@@ -358,15 +362,18 @@ def learn_envs(environments):
         env_model_dir = f'{env_dir}/Models'
         print(f"Training on {env_name}")
 
+        n_instructions = 1
+
         if env_name == 'simplest_simplest_546025.6070834016_996382.4069940181.z8':
             n_instructions = 1
-        elif env_name in Pretraining.Pretraining25:
+            # check if the env name start with one of the elements in pretraining set
+        elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining25):
             n_instructions = 2
-        elif env_name in Pretraining.Pretraining50:
+        elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining50):
             n_instructions = 4
-        elif env_name in Pretraining.Pretraining75:
+        elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining75):
             n_instructions = 7
-        elif env_name in Pretraining.Pretraining100:
+        elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining100):
             n_instructions = 10
 
         # Create and wrap the environment
@@ -398,7 +405,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=500, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=100, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training

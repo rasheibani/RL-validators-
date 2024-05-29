@@ -407,7 +407,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=100, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=5000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -518,16 +518,16 @@ def evaluate_all_trained_models():
         complexity = 0
         if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):
             complexity = 0.25
-        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining50):
+        if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining50):
             complexity = 0.5
-        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining75):
+        if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining75):
             complexity = 0.75
-        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining100):
+        if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining100):
             complexity = 1
         if subfolder.startswith('simplest'):
             complexity = 0
 
-        df = df.append({'Model': subfolder, 'Mean Reward': mean_reward, 'Std Reward': std_reward, 'Complexity_of_Environment': complexity}, ignore_index=True)
+        df = df._append({'Model': subfolder.split('_')[0:2], 'Mean Reward': round(mean_reward), 'Std Reward': round(std_reward), 'Complexity_of_Environment': complexity}, ignore_index=True)
         df.to_csv('data/evaluation_results.csv')
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
         print(f"Model {subfolder} evaluated successfully")

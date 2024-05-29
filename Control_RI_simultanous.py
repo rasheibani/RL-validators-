@@ -1,4 +1,6 @@
 # Environment = 'data/Environments/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8'
+import pandas
+
 Environment = 'data/Environments/test.zblorb'
 RI = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
 
@@ -410,6 +412,8 @@ def learn_envs(environments):
 
         # Save the model after training
         model.save(f'{env_model_dir}/final_model')
+        # copy the z8 file to the trained folder
+        os.system(f'cp data/Environments/{env_name} {env_dir}/{env_name}')
 
     return model
 
@@ -501,6 +505,32 @@ def predict_proba(model, state):
     probs_np = probs_np / np.sum(probs_np)
     return probs_np
 
+def evaluate_all_trained_models():
+    # iterate on subfolders of data/trained and load the models
+
+    df = pandas.DataFrame(columns=['Model', 'Mean Reward', 'Std Reward', 'Complexity_of_Environment'])
+    for subfolder in os.listdir('data/trained'):
+        model = PPO.load(f'data/trained/{subfolder}/Models/final_model.zip')
+        env = TextWorldEnv(f'data/trained/{subfolder}/{subfolder}', 0, 0)
+        # evaluate the model
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False,
+                                                  callback=None, reward_threshold=None, return_episode_rewards=False)
+        complexity = 0
+        if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):
+            complexity = 0.25
+        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining50):
+            complexity = 0.5
+        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining75):
+            complexity = 0.75
+        elif any(subfolder.startswith(envP) for envP in Pretraining.Pretraining100):
+            complexity = 1
+        if subfolder.startswith('simplest'):
+            complexity = 0
+
+        df = df.append({'Model': subfolder, 'Mean Reward': mean_reward, 'Std Reward': std_reward, 'Complexity_of_Environment': complexity}, ignore_index=True)
+        df.to_csv('data/evaluation_results.csv')
+        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
+        print(f"Model {subfolder} evaluated successfully")
 
 if __name__ == "__main__":
     nlp = spacy.load("en_core_web_sm")
@@ -525,5 +555,7 @@ if __name__ == "__main__":
     # eval_by_interaction(model, all_envs[0], route_instruction)
     print(f'observation: {observation}')
     b = predict_proba(model, observation)
+
+    evaluate_all_trained_models()
 
 

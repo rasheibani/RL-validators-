@@ -394,7 +394,7 @@ def learn_envs(environments):
             eval_freq=50000,
             deterministic=False,
             render=False,
-            callback_after_eval=callbackOnNoImprovement,
+            # callback_after_eval=callbackOnNoImprovement,
             callback_on_new_best=callbackOnBest
         )
 
@@ -407,7 +407,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=5000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=100, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -513,7 +513,7 @@ def evaluate_all_trained_models():
         model = PPO.load(f'data/trained/{subfolder}/Models/final_model.zip')
         env = TextWorldEnv(f'data/trained/{subfolder}/{subfolder}', 0, 0)
         # evaluate the model
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False,
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=5, deterministic=False, render=False,
                                                   callback=None, reward_threshold=None, return_episode_rewards=False)
         complexity = 0
         if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):

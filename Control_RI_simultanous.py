@@ -278,7 +278,7 @@ class TextWorldEnv(gym.Env):
 
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
 
-                reward = 500
+                reward = 20
                 terminate = True
                 self.counter = self.counter + 1
                 # print with green color
@@ -301,7 +301,7 @@ class TextWorldEnv(gym.Env):
                 # shape reward based on the distance to the target
                 distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
                 reward = 0
-                reward = np.clip(reward, 0, 500)
+                # reward = np.clip(reward, 0, 20)
                 terminate = False
             truncated = False
             observation = np.concatenate((
@@ -383,7 +383,7 @@ def learn_envs(environments):
                            Environment['x_destination'], Environment['y_destination'], n_instructions=n_instructions)
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
-        reward_threshold = 490
+        reward_threshold = 19.5
 
         callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
         callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
@@ -391,7 +391,7 @@ def learn_envs(environments):
             eval_env=env,
             best_model_save_path=env_model_dir,
             log_path=env_logs_dir,
-            eval_freq=50000,
+            eval_freq=500000,
             deterministic=False,
             render=False,
             # callback_after_eval=callbackOnNoImprovement,
@@ -407,7 +407,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=100, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=3000, log_interval=5, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training

@@ -28,6 +28,8 @@ import Pretraining
 from stable_baselines3.common.policies import obs_as_tensor
 import xml.etree.ElementTree as ET
 import os
+
+
 class CustomFeatureExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Box):
         super(CustomFeatureExtractor, self).__init__(observation_space, features_dim=64)
@@ -50,7 +52,6 @@ class CustomFeatureExtractor(BaseFeaturesExtractor):
         observations_flat = observations.view(observations.size(0), self.observation_flat_dim)
 
         return self.feature_extractor(observations_flat)
-
 
 
 class CustomPolicy(ActorCriticPolicy):
@@ -84,7 +85,6 @@ class CustomPolicy(ActorCriticPolicy):
         return action, values, prob_of_selected_action
 
 
-
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
     pattern = r"X:\s*([\d.]+)\s*\nY:\s*([\d.]+)"
@@ -111,6 +111,29 @@ def text_to_action(text):
         'go southwest': 7
     }
     return mapping.get(text, -1)
+
+
+def normalize(observation):
+    # Separate the components
+    admissible_actions = observation[:8]  # Assuming first 8 are admissible actions
+    route_instructions = observation[8:23]  # Next 15 are route instructions
+    instruction_index = observation[23]  # Last is instruction index
+
+    # Normalize admissible actions (already in [0, 1])
+    normalized_admissible_actions = admissible_actions
+
+    # Normalize route instructions, treating 8 as padding and replacing it with -1
+    normalized_route_instructions = np.where(route_instructions != 8, route_instructions / 7, -1)
+
+    # Normalize instruction index
+    max_instruction_index = len(route_instructions)
+    normalized_instruction_index = instruction_index / max_instruction_index
+
+    # Combine normalized components
+    normalized_observation = np.concatenate(
+        [normalized_admissible_actions, normalized_route_instructions, [normalized_instruction_index]])
+
+    return normalized_observation
 
 
 def get_admissible_actions(feedback):
@@ -218,13 +241,15 @@ class TextWorldEnv(gym.Env):
         self.y_origin = self.y
         if 'route_instructions' in kwargs:
             rti = kwargs['route_instructions']
-            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
+            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(
+                self.route_instructions)
             self.route_instructions = [text_to_action(instruction) for instruction in rti.split('. ')]
         else:
             while True:
                 admissible_actions = get_admissible_actions(self.game_state.feedback)
                 observation = admissible_actions_to_observation(admissible_actions)
-                self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions(**kwargs)
+                self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions(
+                    **kwargs)
                 if len(self.route_instructions) > 0:
                     break
         self.dist_from_origin_to_destination = np.sqrt((self.x_destination - self.x_origin) ** 2 + (
@@ -241,6 +266,7 @@ class TextWorldEnv(gym.Env):
             route_instruction_padded,
             np.array([self.instruction_index])
         ))
+        observation = normalize(observation)
         return observation, {}
 
     def step(self, action):
@@ -262,6 +288,7 @@ class TextWorldEnv(gym.Env):
                        (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
                 np.array([self.instruction_index])
             ))
+            observation = normalize(observation)
             print(''f'')
 
             return observation, reward, terminate, truncated, {}
@@ -284,7 +311,7 @@ class TextWorldEnv(gym.Env):
                 # print with green color
                 # print(f'\033[92m{self.instruction_index}\033[0m')
             else:
-                if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold-1:
+                if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold - 1:
                     distance = np.sqrt((self.x - self.x_destination) ** 2 + (self.y - self.y_destination) ** 2)
                     reward = -1
                     terminate = False
@@ -295,6 +322,7 @@ class TextWorldEnv(gym.Env):
                                (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
                         np.array([self.instruction_index])
                     ))
+                    observation = normalize(observation)
                     # print(observation, 'truncated') if self.letsprint else None
                     self.instruction_index = self.instruction_index + 1
                     return observation, reward, terminate, truncated, {}
@@ -310,6 +338,7 @@ class TextWorldEnv(gym.Env):
                        (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
                 np.array([self.instruction_index])
             ))
+            observation = normalize(observation)
             self.instruction_index = self.instruction_index + 1
             return observation, reward, terminate, truncated, {}
 
@@ -354,7 +383,6 @@ class TextWorldEnv(gym.Env):
         return extract_coordinates(self.game_state.feedback)
 
 
-
 def learn_envs(environments):
     model = None
     for i, Environment in enumerate(environments):
@@ -383,7 +411,7 @@ def learn_envs(environments):
                            Environment['x_destination'], Environment['y_destination'], n_instructions=n_instructions)
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
-        reward_threshold = 19.5
+        reward_threshold = 19
 
         callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
         callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
@@ -400,14 +428,14 @@ def learn_envs(environments):
 
         # Load model if it exists, otherwise initialize it
         if model is None:
-            model = PPO(CustomPolicy, env=env, verbose=1, seed=0, device='cuda')
+            model = DQN('MlpPolicy', env=env, verbose=20, seed=0, device='cuda', exploration_fraction=0.99)
         else:
             model.set_env(env)
 
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=3000, log_interval=5, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=30000, log_interval=10000, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -471,6 +499,8 @@ def eval_by_interaction(model, env, route_instruction):
         if terminate or truncated:
             print("Terminating the episode")
             break
+
+
 def load_envs():
     # load list of environments from pretraining
     pretraining_set = Pretraining.Pretraining25
@@ -488,10 +518,11 @@ def load_envs():
                 x_destination = float(env_name[-2])
                 y_destination = float(env_name[-1].split('.')[0])
                 all_env_pretraining.append({'env': file
-                                            , 'x_destination': x_destination
-                                            , 'y_destination': y_destination})
+                                               , 'x_destination': x_destination
+                                               , 'y_destination': y_destination})
     print(all_env_pretraining)
     return all_env_pretraining
+
 
 def predict_proba(model, state):
     print(state)
@@ -499,21 +530,22 @@ def predict_proba(model, state):
     print(obs)
     dis = model.policy.get_distribution(obs)
     probs = dis.distribution.probs
-    print (probs)
+    print(probs)
     probs_np = probs.detach().cpu().numpy()
     # normalize the probabilities
     probs_np = probs_np / np.sum(probs_np)
     return probs_np
+
 
 def evaluate_all_trained_models():
     # iterate on subfolders of data/trained and load the models
 
     df = pandas.DataFrame(columns=['Model', 'Mean Reward', 'Std Reward', 'Complexity_of_Environment'])
     for subfolder in os.listdir('data/trained'):
-        model = PPO.load(f'data/trained/{subfolder}/Models/final_model.zip')
+        model = DQN.load(f'data/trained/{subfolder}/Models/final_model.zip')
         env = TextWorldEnv(f'data/trained/{subfolder}/{subfolder}', 0, 0)
         # evaluate the model
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=5, deterministic=False, render=False,
+        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100, deterministic=False, render=False,
                                                   callback=None, reward_threshold=None, return_episode_rewards=False)
         complexity = 0
         if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):
@@ -527,10 +559,13 @@ def evaluate_all_trained_models():
         if subfolder.startswith('simplest'):
             complexity = 0
 
-        df = df._append({'Model': subfolder.split('_')[0:2], 'Mean Reward': round(mean_reward), 'Std Reward': round(std_reward), 'Complexity_of_Environment': complexity}, ignore_index=True)
+        df = df._append(
+            {'Model': subfolder.split('_')[0:2], 'Mean Reward': round(mean_reward, 2), 'Std Reward': round(std_reward, 2),
+             'Complexity_of_Environment': complexity}, ignore_index=True)
         df.to_csv('data/evaluation_results.csv')
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
         print(f"Model {subfolder} evaluated successfully")
+
 
 if __name__ == "__main__":
     nlp = spacy.load("en_core_web_sm")
@@ -541,21 +576,21 @@ if __name__ == "__main__":
 
     # learn the environments in all_env_pretraining
     model = learn_envs(all_env_pretraining)
-
-    # evaluate the model
-    model = PPO.load('data/trained/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/final_model.zip')
-    env = TextWorldEnv('data/Environments/simplest_simplest_546025.6070834016_996382.4069940181.z8', 996382.4069940181, 996382.4069940181)
-    # change the seed of np random generator
-    np.random.seed(0)
-    # evaluate_model(model, all_envs)
-
-    route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
-    another_route_instruction = 'go west'
-    observation, _ = env.reset(route_instructions = another_route_instruction)
-    # eval_by_interaction(model, all_envs[0], route_instruction)
-    print(f'observation: {observation}')
-    b = predict_proba(model, observation)
-
     evaluate_all_trained_models()
 
+
+    # # evaluate the model
+    # model = PPO.load('data/trained/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/final_model.zip')
+    # env = TextWorldEnv('data/Environments/simplest_simplest_546025.6070834016_996382.4069940181.z8', 996382.4069940181,
+    #                    996382.4069940181)
+    # # change the seed of np random generator
+    # np.random.seed(0)
+    # # evaluate_model(model, all_envs)
+    #
+    # route_instruction = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
+    # another_route_instruction = 'go west'
+    # observation, _ = env.reset(route_instructions=another_route_instruction)
+    # # eval_by_interaction(model, all_envs[0], route_instruction)
+    # print(f'observation: {observation}')
+    # b = predict_proba(model, observation)
 

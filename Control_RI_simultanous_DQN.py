@@ -435,7 +435,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=30000, log_interval=10000, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=100000, log_interval=25000, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training

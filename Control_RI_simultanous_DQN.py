@@ -435,7 +435,7 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=100000, log_interval=25000, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=1000000, log_interval=25000, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training
@@ -546,7 +546,8 @@ def evaluate_all_trained_models():
         env = TextWorldEnv(f'data/trained/{subfolder}/{subfolder}', 0, 0)
         # evaluate the model
         mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100, deterministic=False, render=False,
-                                                  callback=None, reward_threshold=None, return_episode_rewards=False)
+                                                  callback=None, reward_threshold=None, return_episode_rewards=True, warn=False)
+        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
         complexity = 0
         if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):
             complexity = 0.25
@@ -560,8 +561,9 @@ def evaluate_all_trained_models():
             complexity = 0
 
         df = df._append(
-            {'Model': subfolder.split('_')[0:2], 'Mean Reward': round(mean_reward, 2), 'Std Reward': round(std_reward, 2),
+            {'Model': subfolder.split('_')[0:2], 'Mean Reward': mean_reward, 'Std Reward': std_reward,
              'Complexity_of_Environment': complexity}, ignore_index=True)
+        df.sort_values(by=['Complexity_of_Environment'], inplace=True)
         df.to_csv('data/evaluation_results.csv')
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
         print(f"Model {subfolder} evaluated successfully")

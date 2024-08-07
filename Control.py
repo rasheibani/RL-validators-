@@ -250,7 +250,7 @@ def learn_envs(environments):
             model.set_env(env)
 
         # Learn the model
-        model.learn(total_timesteps=500000, log_interval=5, callback=callback, tb_log_name=f'PPO_{env_name}',
+        model.learn(total_timesteps=1000000, log_interval=50, callback=callback, tb_log_name=f'PPO_{env_name}',
                     reset_num_timesteps=True)
 
         # Save the model after training

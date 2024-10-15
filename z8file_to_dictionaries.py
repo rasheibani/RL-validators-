@@ -39,11 +39,22 @@ def reverse_action(action):
     }
     return reverse_mapping.get(action, None)
 
+def extract_coordinates(feedback):
+    pattern = r"X:\s*([\d.]+)\s*Y:\s*([\d.]+)"
+    matches = re.search(pattern, feedback)
+    if matches:
+        x_coord = float(matches.group(1))
+        y_coord = float(matches.group(2))
+        return x_coord, y_coord
+    else:
+        return None, None
+
 def z8file_to_dictionaries(gameaddress):
     env = textworld.start(gameaddress)
     env.reset()
 
     game_dict = {}
+    room_positions = {}
     visited_rooms = set()  # To keep track of visited rooms
     room_queue = deque([[]])  # Store paths to reach rooms
 
@@ -57,6 +68,7 @@ def z8file_to_dictionaries(gameaddress):
 
         feedback = game_state.feedback
         room_id = extract_area_id(feedback)
+        x_coord, y_coord = extract_coordinates(feedback)
 
         if not room_id:
             return  # Skip if we cannot extract room ID
@@ -64,6 +76,7 @@ def z8file_to_dictionaries(gameaddress):
         # Add room to the dictionary if not already present
         if room_id not in game_dict:
             game_dict[room_id] = {"observation": feedback}
+            room_positions[room_id] = (x_coord, y_coord)
 
         # Mark the room as visited
         visited_rooms.add(room_id)
@@ -96,10 +109,12 @@ def z8file_to_dictionaries(gameaddress):
         current_path = room_queue.popleft()
         explore_room(current_path)
 
-    return game_dict
+    return game_dict, room_positions
 
 # Run the function and print the resulting dictionary
 if __name__ == "__main__":
-    game_dict = z8file_to_dictionaries(testaddress)
+    game_dict, r = z8file_to_dictionaries(testaddress)
     for key, value in game_dict.items():
+        print(key, value)
+    for key, value in r.items():
         print(key, value)

@@ -4,7 +4,6 @@ import pandas
 # Environment = 'data/Environments/test.zblorb'
 RI = 'go east. go south. go west. go southwest. go southwest. Arrive at destination!'
 
-import textworld.gym  # Register the gym environments
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -28,7 +27,7 @@ import Pretraining
 from stable_baselines3.common.policies import obs_as_tensor
 import xml.etree.ElementTree as ET
 import os
-
+from z8file_to_dictionaries import z8file_to_dictionaries
 
 class CustomFeatureExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Box):
@@ -110,7 +109,7 @@ def text_to_action(text):
         'go southeast': 6,
         'go southwest': 7
     }
-    return mapping.get(text, -1)
+    return mapping.get(text.strip(), -1)
 
 
 def normalize(observation):
@@ -148,18 +147,6 @@ def get_admissible_actions(feedback):
     return admissible_actions
 
 
-def feedback_to_embedding(feedback):
-    doc = nlp(feedback)
-    embeddings = []
-    for token in doc:
-        embeddings.append(token.vector)
-
-    if embeddings:
-        return np.mean(embeddings, axis=0).astype(np.float32)
-    else:
-        # Return a tensor with a valid shape filled with zeros
-        return np.zeros((1, 300), dtype=np.float32)
-
 
 def sentence_from_action(action):
     if action == 0:
@@ -190,6 +177,10 @@ def extract_area_id(feedback):
         room_id = matches.group(2)
         return f"a{area_id}r{room_id}"
     else:
+        # Debugging: Print feedback when extraction fails
+        print("Failed to extract area ID from feedback:")
+        print(feedback)
+        print("-" * 50)
         return None
 
 
@@ -202,225 +193,161 @@ def admissible_actions_to_observation(admissible_actions):
     return observation
 
 
+
+
 class TextWorldEnv(gym.Env):
-    def __init__(self, game_address, x_destination, y_destination, n_instructions=1):
-        self.y = None
-        self.x = None
+    def __init__(self, game_dict, room_positions, x_destination, y_destination, n_instructions=1):
+        super(TextWorldEnv, self).__init__()
+        self.game_dict = game_dict  # The game dictionary
+        self.room_positions = room_positions  # Mapping from room IDs to (x, y) coordinates
+        self.current_room_id = None
         self.n_instructions = n_instructions
-        self.x_origin = None
-        self.y_origin = None
-        self.is_async = False
-        self.game_address = game_address
-        self.env = textworld.start(game_address)
-        self.game_state = None
         self.action_space = spaces.Discrete(8)
+        self.observation_space = spaces.Box(low=0, high=8, shape=(24,), dtype=np.int32)
+        self.route_instructions = []
+        self.instruction_index = 0
         self.visited_states_actions = set()
         self.last_feedback_embedding = None
         self.counter = 0
         self.x_destination = x_destination
         self.y_destination = y_destination
-
-        self.dist_from_origin_to_destination = None
-
-        self.letsprint = True
+        self.x_origin = None
+        self.y_origin = None
         self.exploration_threshold = 0
 
-        # The observation space is vector with 8 elements binary, each element representing a direction, 1 if the
-        # direction is admissible, 0 otherwise
-        self.observation_space = spaces.Box(low=0, high=8, shape=(24,), dtype=np.int32)
-        self.route_instructions = []
-        self.instruction_index = 0
-
     def reset(self, **kwargs):
-        self.game_state = self.env.reset()
-        self.game_state, _, _ = self.env.step("look")
-        admissible_actions = get_admissible_actions(self.game_state.feedback)
-        observation = admissible_actions_to_observation(admissible_actions)
-        self.x, self.y = extract_coordinates(self.game_state.feedback)
-        self.x_origin = self.x
-        self.y_origin = self.y
-        if 'route_instructions' in kwargs:
-            rti = kwargs['route_instructions']
-            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(
-                self.route_instructions)
-            self.route_instructions = [text_to_action(instruction) for instruction in rti.split('. ')]
-        else:
-            while True:
-                admissible_actions = get_admissible_actions(self.game_state.feedback)
-                observation = admissible_actions_to_observation(admissible_actions)
-                self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions(
-                    **kwargs)
-                if len(self.route_instructions) > 0:
-                    break
-        self.dist_from_origin_to_destination = np.sqrt((self.x_destination - self.x_origin) ** 2 + (
-                self.y_destination - self.y_origin) ** 2)
+        # set the current room to the starting room which is  the first key room in the game dictionary
+        self.current_room_id = list(self.game_dict.keys())[0]
+        self.x, self.y = self.room_positions[self.current_room_id]
+        self.x_origin, self.y_origin = self.x, self.y
         self.visited_states_actions.clear()
         self.instruction_index = 0
-        if len(self.route_instructions) < 15:
-            route_instruction_padded = np.pad(self.route_instructions,
-                                              (0, 15 - len(self.route_instructions)), 'constant', constant_values=8)
+
+        if 'route_instructions' in kwargs:
+            rti = kwargs['route_instructions']
+            self.route_instructions = [text_to_action(instr) for instr in rti.split('. ')]
+            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
         else:
-            route_instruction_padded = self.route_instructions[:15]
+            self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
+
+        self.dist_from_origin_to_destination = np.sqrt(
+            (self.x_destination - self.x_origin) ** 2 + (self.y_destination - self.y_origin) ** 2
+        )
+
+        admissible_actions = self.get_admissible_actions()
         observation = np.concatenate((
             admissible_actions_to_observation(admissible_actions),
-            route_instruction_padded,
+            self.pad_instructions(),
             np.array([self.instruction_index])
         ))
         observation = normalize(observation)
         return observation, {}
 
+    def get_admissible_actions(self):
+        return list(self.game_dict[self.current_room_id].keys())
+
+    def pad_instructions(self):
+        if len(self.route_instructions) < 15:
+            return np.pad(self.route_instructions,
+                          (0, 15 - len(self.route_instructions)),
+                          'constant', constant_values=8)
+        else:
+            return self.route_instructions[:15]
+
+    def construct_observation(self, admissible_actions):
+        observation = np.concatenate((
+            admissible_actions_to_observation(admissible_actions),
+            self.pad_instructions(),
+            np.array([self.instruction_index])
+        ))
+        observation = normalize(observation)
+        return observation
+
     def step(self, action):
-        # if there is this sentence "You can't go that way."in the feedback, then execute a look command
-        if "You can't go that way." in self.game_state.feedback:
-            self.game_state, _, _ = self.env.step("look")
-        # check if the action is within the admissible actions
-        admissible_actions = get_admissible_actions(self.game_state.feedback)
         sentence = sentence_from_action(action)
+        admissible_actions = self.get_admissible_actions()
 
         if sentence not in admissible_actions:
-            # print(f"Action {sentence} is not admissible. Skipping.")
             reward = -1
             terminate = False
             truncated = False
-            observation = np.concatenate((
-                admissible_actions_to_observation(admissible_actions),
-                np.pad(self.route_instructions,
-                       (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                np.array([self.instruction_index])
-            ))
-            observation = normalize(observation)
-            print(''f'')
-
+            observation = self.construct_observation(admissible_actions)
             return observation, reward, terminate, truncated, {}
         else:
-            self.game_state, _, done_dummy = self.env.step(sentence)
-            self.x, self.y = extract_coordinates(self.game_state.feedback)
+            # Move to the next room
+            next_room_id = self.game_dict[self.current_room_id][sentence]
+            if next_room_id is None:
+                reward = -1
+                terminate = False
+                truncated = False
+                observation = self.construct_observation(admissible_actions)
+                return observation, reward, terminate, truncated, {}
 
-            feedback_embedding = feedback_to_embedding(self.game_state.feedback)
-            self.last_feedback_embedding = feedback_embedding
-            admissible_action = get_admissible_actions(self.game_state.feedback)
+            self.current_room_id = next_room_id
+            self.x, self.y = self.room_positions[self.current_room_id]
 
-            target_x = np.float64(self.x_destination)
-            target_y = np.float64(self.y_destination)
+            # Calculate reward
+            target_x = self.x_destination
+            target_y = self.y_destination
 
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
-
                 reward = 20
                 terminate = True
-                self.counter = self.counter + 1
-                # print with green color
-                # print(f'\033[92m{self.instruction_index}\033[0m')
+                truncated = False
             else:
                 if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold - 1:
-                    distance = np.sqrt((self.x - self.x_destination) ** 2 + (self.y - self.y_destination) ** 2)
                     reward = -1
                     terminate = False
                     truncated = True
-                    observation = np.concatenate((
-                        admissible_actions_to_observation(admissible_actions),
-                        np.pad(self.route_instructions,
-                               (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                        np.array([self.instruction_index])
-                    ))
-                    observation = normalize(observation)
-                    # print(observation, 'truncated') if self.letsprint else None
-                    self.instruction_index = self.instruction_index + 1
+                    observation = self.construct_observation(admissible_actions)
+                    self.instruction_index += 1
                     return observation, reward, terminate, truncated, {}
-                # shape reward based on the distance to the target
-                distance = np.sqrt((self.x - target_x) ** 2 + (self.y - target_y) ** 2)
                 reward = 0
-                # reward = np.clip(reward, 0, 20)
                 terminate = False
-            truncated = False
-            observation = np.concatenate((
-                admissible_actions_to_observation(admissible_action),
-                np.pad(self.route_instructions,
-                       (0, 15 - len(self.route_instructions)), 'constant', constant_values=8),
-                np.array([self.instruction_index])
-            ))
-            observation = normalize(observation)
-            self.instruction_index = self.instruction_index + 1
+                truncated = False
+
+            admissible_actions = self.get_admissible_actions()
+            observation = self.construct_observation(admissible_actions)
+            self.instruction_index += 1
             return observation, reward, terminate, truncated, {}
 
-    def render(self):
-        self.env.render()
-
-    def close(self):
-        self.env.close()
-
-    def __len__(self):
-        return 1  # only one game running at a time
-
-    def generate_route_instructions(self, **kwargs):
-
-        # generate a random number form 1 to 15
+    def generate_route_instructions(self):
         n_instructions = self.n_instructions
-        # print(f'Number of Instructions: {n_instructions}')
-        # run the env for n_instructions steps and collect the route instructions
-        # make sure that route instructions are from the admissible actions
         route_instructions = []
-        for i in range(n_instructions):
-            admissible_actions = get_admissible_actions(self.game_state.feedback)
-            # print(f'Admissible Actions: {admissible_actions}')
-            instruction = np.random.choice(admissible_actions)
-            # print(f'Instruction: {instruction}')
-            route_instructions.append(instruction)
-            self.game_state, _, _ = self.env.step(instruction)
+        temp_room_id = self.current_room_id
 
-        # convert the elements of the route instructions to integers
-        route_instructions = [text_to_action(instruction) for instruction in route_instructions]
+        for _ in range(n_instructions):
+            admissible_actions = list(self.game_dict[temp_room_id].keys())
+            if not admissible_actions:
+                break
+            action = np.random.choice(admissible_actions)
+            route_instructions.append(text_to_action(action))
+            temp_room_id = self.game_dict[temp_room_id][action]
+            if temp_room_id is None:
+                break
 
-        # collect the destination x y
-        self.x_destination, self.y_destination = extract_coordinates(self.game_state.feedback)
-        # rest the env
-        self.game_state = self.env.reset()
-        self.game_state, _, _ = self.env.step("look")
+        self.x_destination, self.y_destination = self.room_positions[temp_room_id]
         return route_instructions, self.x_destination, self.y_destination
 
     def get_destination_from_route_instructions(self, route_instructions):
-        for instruction in route_instructions:
-            self.game_state, _, _ = self.env.step(instruction)
-        return extract_coordinates(self.game_state.feedback)
+        temp_room_id = self.current_room_id
+        for action in route_instructions:
+            action_text = sentence_from_action(action)
+            next_room_id = self.game_dict[temp_room_id].get(action_text)
+            if next_room_id is None:
+                break  # Invalid action
+            temp_room_id = next_room_id
+        return self.room_positions[temp_room_id]
 
+    def render(self):
+        pass  # Implement if needed
 
-class RoomExplorer:
-    def __init__(self, env):
-        self.env = env  # The TextWorld environment
-        self.visited_rooms = set()  # Track visited rooms to avoid revisiting
-        self.room_map = {}  # Store the {room_id: {action: next_room_observation}} dictionary
+    def close(self):
+        pass  # Implement if needed
 
-    def explore(self, room_id):
-        if room_id in self.visited_rooms:
-            return
+    def __len__(self):
+        return 1  # Only one game running at a time
 
-        self.visited_rooms.add(room_id)
-
-        # get admissible actions
-        admissible_actions = get_admissible_actions(self.env.game_state.feedback)
-
-        # initialize the room entry in the room map
-        self.room_map[room_id] = {}
-
-        # explore each action
-        for action in admissible_actions:
-            self.env.game_state, _, _ = self.env.env.step(action)
-            next_room_id = extract_area_id(self.env.game_state.feedback)
-            next_room_observation = self.env.game_state.feedback
-            self.room_map[room_id][action] = next_room_observation
-            self.explore(next_room_id)
-
-        # after exploring all actions, reset the environment
-        self.env.game_state = self.env.env.reset()
-
-
-def extract_all_rooms(env):
-    explorer = RoomExplorer(env)
-    explorer.explore(extract_area_id(env.game_state.feedback))
-    print(explorer.room_map)
-    return explorer.room_map
-
-
-extract_all_rooms(TextWorldEnv(Environment, 0, 0))
 
 
 def learn_envs(environments):
@@ -436,7 +363,6 @@ def learn_envs(environments):
 
         if env_name == 'simplest_simplest_546025.6070834016_996382.4069940181.z8':
             n_instructions = 1
-            # check if the env name start with one of the elements in pretraining set
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining25):
             n_instructions = 2
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining50):
@@ -446,9 +372,18 @@ def learn_envs(environments):
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining100):
             n_instructions = 10
 
+        # Load game dictionary and room positions
+        gameaddress = f'data/Environments/{env_name}'
+        game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+
         # Create and wrap the environment
-        env = TextWorldEnv(f'data/Environments/{env_name}',
-                           Environment['x_destination'], Environment['y_destination'], n_instructions=n_instructions)
+        env = TextWorldEnv(
+            game_dict,
+            room_positions,
+            Environment['x_destination'],
+            Environment['y_destination'],
+            n_instructions=n_instructions
+        )
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
         reward_threshold = 19
@@ -462,7 +397,6 @@ def learn_envs(environments):
             eval_freq=500000,
             deterministic=False,
             render=False,
-            # callback_after_eval=callbackOnNoImprovement,
             callback_on_new_best=callbackOnBest
         )
 
@@ -475,12 +409,17 @@ def learn_envs(environments):
         n_instructions = i + 1
 
         # Learn the model
-        model.learn(total_timesteps=2000000, log_interval=50000, tb_log_name=f'PPO_{env_name}',
-                    reset_num_timesteps=True)
+        model.learn(
+            total_timesteps=2000000,
+            log_interval=50000,
+            tb_log_name=f'PPO_{env_name}',
+            reset_num_timesteps=True
+            # callback=callback  # Include the callback
+        )
 
         # Save the model after training
-        model.save(f'{env_model_dir}/final_model')
-        # copy the z8 file to the trained folder
+        model.save(f'{env_model_dir}/final_modeldict')
+        # Copy the z8 file to the trained folder
         os.system(f'cp data/Environments/{env_name} {env_dir}/{env_name}')
 
     return model
@@ -493,46 +432,66 @@ def evaluate_model(model, environments):
         env_logs_dir = f'{env_dir}/Logs'
         env_model_dir = f'{env_dir}/Models'
 
+        # Load game dictionary and room positions
+        gameaddress = f'data/Environments/{env_name}'
+        game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+
         # Create and wrap the environment
-        env = TextWorldEnv(f'data/Environments/{env_name}', Environment['x_destination'], Environment['y_destination'])
+        env = TextWorldEnv(
+            game_dict,
+            room_positions,
+            Environment['x_destination'],
+            Environment['y_destination']
+        )
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
         # Evaluate the model
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=20, deterministic=False, render=False,
-                                                  callback=None, reward_threshold=None, return_episode_rewards=False)
+        mean_reward, std_reward = evaluate_policy(
+            model,
+            env,
+            n_eval_episodes=20,
+            deterministic=False,
+            render=False,
+            callback=None,
+            reward_threshold=None,
+            return_episode_rewards=False
+        )
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
     return
 
 
-def eval_by_interaction(model, env, route_instruction):
-    # use the route instruction sentence sequences to choose the consecutive actions with the environment and get the reward
-    env_name = env['env']
+def eval_by_interaction(model, env_info, route_instruction):
+    env_name = env_info['env']
     env_dir = f'data/{env_name}'
     env_logs_dir = f'{env_dir}/Logs'
 
+    # Load game dictionary and room positions
+    gameaddress = f'data/Environments/{env_name}'
+    game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+
     # Create and wrap the environment
-    env = TextWorldEnv(f'data/Environments/{env_name}', env['x_destination'], env['y_destination'])
+    env = TextWorldEnv(
+        game_dict,
+        room_positions,
+        env_info['x_destination'],
+        env_info['y_destination']
+    )
     env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
-    # reset the environment
+    # Reset the environment
     observation, info = env.reset()
     episode_reward = 0
 
-    # split the route instruction into sentences
+    # Split the route instruction into sentences
     sentences = route_instruction.split('. ')
     for sentence in sentences:
-        # action, _ = model.predict(observation, deterministic=False)
         action = text_to_action(sentence)
         observation, reward, terminate, truncated, _ = env.step(action)
-        # extract the probability distribution of the actions
         b = predict_proba(model, observation)
-        # print b with only 2 decimal places
         b = np.round(b, 3)
         print(f"Action: {sentence}, Probability Distribution: {b}")
-        # extract the probability of the action
         prob = b[0][action]
 
-        # add the probability of the action to the episode reward
         episode_reward += prob
 
         print(f"Terminate: {terminate}, Accumulated Probability: {round(episode_reward, 2)}")
@@ -542,26 +501,23 @@ def eval_by_interaction(model, env, route_instruction):
 
 
 def load_envs():
-    # load list of environments from pretraining
-    pretraining_set = Pretraining.Pretraining25
-    pretraining_set.extend(Pretraining.Pretraining50)
-    pretraining_set.extend(Pretraining.Pretraining75)
-    pretraining_set.extend(Pretraining.Pretraining100)
-    # search in data/Environment and see if any *.z8 files begin with pretraining_set element
+    pretraining_set = Pretraining.Pretraining25 + Pretraining.Pretraining50 + \
+                      Pretraining.Pretraining75 + Pretraining.Pretraining100
     all_env_pretraining = []
     for env in pretraining_set:
         for file in os.listdir('data/Environments'):
             if file.startswith(env) and file.endswith('.z8'):
                 env_name = file
-                # split the name by _
-                env_name = env_name.split('_')
-                x_destination = float(env_name[-2])
-                y_destination = float(env_name[-1].split('.')[0])
-                all_env_pretraining.append({'env': file
-                                               , 'x_destination': x_destination
-                                               , 'y_destination': y_destination})
-    print(all_env_pretraining)
+                env_name_parts = env_name.split('_')
+                x_destination = float(env_name_parts[-2])
+                y_destination = float(env_name_parts[-1].split('.')[0])
+                all_env_pretraining.append({
+                    'env': file,
+                    'x_destination': x_destination,
+                    'y_destination': y_destination
+                })
     return all_env_pretraining
+
 
 
 def predict_proba(model, state):
@@ -619,7 +575,7 @@ if __name__ == "__main__":
 
     # learn the environments in all_env_pretraining
     model = learn_envs(all_env_pretraining)
-    evaluate_all_trained_models()
+    # evaluate_all_trained_models()
 
     # # evaluate the model
     # model = PPO.load('data/trained/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/final_model.zip')

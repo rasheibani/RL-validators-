@@ -1,9 +1,9 @@
 import textworld
 import re
 from collections import deque
-
+import pprint
 # Test address for the game environment
-testaddress = 'data/Environments/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8'
+testaddress = 'data/Environments/A_Average-Regular_Approach2_525768.0_999991.0.z8'
 
 def extract_area_id(feedback):
     pattern = r"An area \((\d+)\) in r(\d+)"
@@ -75,7 +75,7 @@ def z8file_to_dictionaries(gameaddress):
 
         # Add room to the dictionary if not already present
         if room_id not in game_dict:
-            game_dict[room_id] = {"observation": feedback}
+            game_dict[room_id] = {}
             room_positions[room_id] = (x_coord, y_coord)
 
         # Mark the room as visited
@@ -114,7 +114,5 @@ def z8file_to_dictionaries(gameaddress):
 # Run the function and print the resulting dictionary
 if __name__ == "__main__":
     game_dict, r = z8file_to_dictionaries(testaddress)
-    for key, value in game_dict.items():
-        print(key, value)
-    for key, value in r.items():
-        print(key, value)
+    pprint.pprint(game_dict)
+    pprint.pprint(r)

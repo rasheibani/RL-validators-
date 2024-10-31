@@ -12,12 +12,7 @@ import re
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
-import torch.nn as nn
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import BaseCallback
+
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, \
     StopTrainingOnNoModelImprovement
 
@@ -29,60 +24,8 @@ import xml.etree.ElementTree as ET
 import os
 from z8file_to_dictionaries import z8file_to_dictionaries
 
-class CustomFeatureExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space: gym.spaces.Box):
-        super(CustomFeatureExtractor, self).__init__(observation_space, features_dim=64)
-        n_actions = 8
-        n_instructions = 15
-        n_total_features = n_actions + n_instructions + 1
 
-        self.observation_flat_dim = n_total_features
-
-        # Define the feature extractor network
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(self.observation_flat_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-        )
-
-    def forward(self, observations: torch.Tensor) -> torch.Tensor:
-        # flatten the observations
-        observations_flat = observations.view(observations.size(0), self.observation_flat_dim)
-
-        return self.feature_extractor(observations_flat)
-
-
-class CustomPolicy(ActorCriticPolicy):
-    def __init__(self, observation_space, action_space, lr_schedule, *args, **kwargs):
-        super(CustomPolicy, self).__init__(observation_space, action_space, lr_schedule,
-                                           features_extractor_class=CustomFeatureExtractor, *args, **kwargs)
-
-    def forward(self, obs: torch.Tensor, deterministic: bool = False):
-        admissible_actions = obs[:, :8]  # Extract the admissible actions
-        route_instructions = obs[:, 8:23]  # Extract the route instructions
-        instruction_index = obs[:, 23]  # Extract the instruction index
-
-        valid_actions_mask = admissible_actions > 0
-        features = self.extract_features(obs)
-        distribution = self._get_action_dist_from_latent(features)
-        admissible_actions_prob = distribution.log_prob(admissible_actions)
-
-        # convert the probablity of actions that are not admissible to -inf
-        admissible_actions_prob[~valid_actions_mask] = float('-inf')
-
-        if deterministic:
-            action = torch.argmax(admissible_actions_prob, dim=1)
-        else:
-            # sample from admissible actions where the probability is not -inf
-            action = torch.multinomial(admissible_actions_prob.exp(), 1)
-
-        # get the probability of the selected action
-        prob_of_selected_action = admissible_actions_prob.gather(1, action)
-
-        values = self.value_net(features)
-        return action, values, prob_of_selected_action
-
+import pandas as pd
 
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
@@ -196,7 +139,7 @@ def admissible_actions_to_observation(admissible_actions):
 
 
 class TextWorldEnv(gym.Env):
-    def __init__(self, game_dict, room_positions, x_destination, y_destination, n_instructions=1):
+    def __init__(self, game_dict, room_positions, x_destination = None, y_destination = None, n_instructions=1):
         super(TextWorldEnv, self).__init__()
         self.game_dict = game_dict  # The game dictionary
         self.room_positions = room_positions  # Mapping from room IDs to (x, y) coordinates
@@ -291,7 +234,7 @@ class TextWorldEnv(gym.Env):
             target_y = self.y_destination
 
             if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
-                reward = 20
+                reward = 25
                 terminate = True
                 truncated = False
             else:
@@ -350,7 +293,7 @@ class TextWorldEnv(gym.Env):
 
 
 
-def learn_envs(environments):
+def learn_envs(environments, max_iterations=10000):
     model = None
     for i, Environment in enumerate(environments):
         env_name = Environment['env']
@@ -380,8 +323,6 @@ def learn_envs(environments):
         env = TextWorldEnv(
             game_dict,
             room_positions,
-            Environment['x_destination'],
-            Environment['y_destination'],
             n_instructions=n_instructions
         )
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
@@ -394,7 +335,7 @@ def learn_envs(environments):
             eval_env=env,
             best_model_save_path=env_model_dir,
             log_path=env_logs_dir,
-            eval_freq=500000,
+            eval_freq=50000,
             deterministic=False,
             render=False,
             callback_on_new_best=callbackOnBest
@@ -410,7 +351,7 @@ def learn_envs(environments):
 
         # Learn the model
         model.learn(
-            total_timesteps=2000000,
+            total_timesteps=max_iterations,
             log_interval=50000,
             tb_log_name=f'PPO_{env_name}',
             reset_num_timesteps=True
@@ -436,12 +377,12 @@ def evaluate_model(model, environments):
         gameaddress = f'data/Environments/{env_name}'
         game_dict, room_positions = z8file_to_dictionaries(gameaddress)
 
-        # Create and wrap the environment
+        # Create and wrap the environment without providing x_destination and y_destination
+        # so that the environment generates them internally during reset
         env = TextWorldEnv(
-            game_dict,
-            room_positions,
-            Environment['x_destination'],
-            Environment['y_destination']
+            game_dict=game_dict,
+            room_positions=room_positions
+            # Do not pass x_destination and y_destination
         )
         env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
@@ -456,7 +397,7 @@ def evaluate_model(model, environments):
             reward_threshold=None,
             return_episode_rewards=False
         )
-        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
+        print(f"Environment: {env_name} | Mean reward: {mean_reward}, Std reward: {std_reward}")
     return
 
 
@@ -534,17 +475,83 @@ def predict_proba(model, state):
 
 
 def evaluate_all_trained_models():
-    # iterate on subfolders of data/trained and load the models
+    # Initialize list to collect evaluation results
+    results = []
 
-    df = pandas.DataFrame(columns=['Model', 'Mean Reward', 'Std Reward', 'Complexity_of_Environment'])
+    # Iterate through each subfolder in 'data/trained'
     for subfolder in os.listdir('data/trained'):
-        model = DQN.load(f'data/trained/{subfolder}/Models/final_model.zip')
-        env = TextWorldEnv(f'data/trained/{subfolder}/{subfolder}', 0, 0)
-        # evaluate the model
-        mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100, deterministic=False, render=False,
-                                                  callback=None, reward_threshold=None, return_episode_rewards=True,
-                                                  warn=False)
-        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
+        model_path = f'data/trained/{subfolder}/Models/final_modeldict.zip'
+
+        # Check if model file exists
+        if not os.path.exists(model_path):
+            print(f"Model file {model_path} does not exist. Skipping.")
+            continue
+
+        # Load the model
+        try:
+            model = DQN.load(model_path)
+        except Exception as e:
+            print(f"Failed to load model from {model_path}: {e}")
+            continue
+
+        # Load game dictionary and room positions
+        gameaddress = f'data/trained/{subfolder}/{subfolder}'
+        try:
+            game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+        except Exception as e:
+            print(f"Failed to load game dictionary from {gameaddress}: {e}")
+            continue
+
+        # Extract x_destination and y_destination from the environment name
+        # Example filename: 'simplest_simplest_546025.6070834016_996382.4069940181.z8'
+        parts = subfolder.split('_')
+        if len(parts) >= 3:
+            try:
+                x_destination = float(parts[-2])
+                y_destination = float(parts[-1].split('.')[0])
+            except ValueError:
+                print(f"Failed to parse coordinates from filename: {subfolder}")
+                x_destination = 0.0
+                y_destination = 0.0
+        else:
+            print(f"Unexpected subfolder name format: {subfolder}")
+            x_destination = 0.0
+            y_destination = 0.0
+
+        # Create the TextWorldEnv with game_dict and room_positions
+        env = TextWorldEnv(
+            game_dict=game_dict,
+            room_positions=room_positions,
+            x_destination=x_destination,
+            y_destination=y_destination,
+            n_instructions=1  # Adjust if needed
+        )
+
+        # Wrap the environment with Monitor
+        env_logs_dir = f'data/trained/{subfolder}/Logs'
+        os.makedirs(env_logs_dir, exist_ok=True)
+        env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+
+        # Evaluate the model
+        try:
+            mean_reward, std_reward = evaluate_policy(
+                model,
+                env,
+                n_eval_episodes=100,
+                deterministic=False,
+                render=False,
+                callback=None,
+                reward_threshold=None,
+                return_episode_rewards=True,
+                warn=False
+            )
+        except Exception as e:
+            print(f"Failed to evaluate model {subfolder}: {e}")
+            continue
+
+        print(f"Environment: {subfolder} | Mean reward: {mean_reward}, Std reward: {std_reward}")
+
+        # Determine complexity based on subfolder name
         complexity = 0
         if any(subfolder.startswith(envP) for envP in Pretraining.Pretraining25):
             complexity = 0.25
@@ -557,13 +564,29 @@ def evaluate_all_trained_models():
         if subfolder.startswith('simplest'):
             complexity = 0
 
-        df = df._append(
-            {'Model': subfolder.split('_')[0:2], 'Mean Reward': mean_reward, 'Std Reward': std_reward,
-             'Complexity_of_Environment': complexity}, ignore_index=True)
-        df.sort_values(by=['Complexity_of_Environment'], inplace=True)
-        df.to_csv('data/evaluation_results.csv')
-        print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
+        # Append the results to the list
+        results.append({
+            'Model': subfolder,  # Adjust based on how you name your subfolders
+            'Mean Reward': mean_reward,
+            'Std Reward': std_reward,
+            'Complexity_of_Environment': complexity
+        })
+
         print(f"Model {subfolder} evaluated successfully")
+
+    # Create DataFrame from results
+    df = pd.DataFrame(results)
+
+    # Sort the DataFrame by Complexity
+    df.sort_values(by=['Complexity_of_Environment'], inplace=True)
+
+    # Save the DataFrame to CSV
+    df.to_csv('data/evaluation_result_DQNs.csv', index=False)
+    print(df)
+
+    print("All models evaluated and results saved to 'data/evaluation_result_DQNs.csv'")
+
+    return
 
 
 if __name__ == "__main__":
@@ -574,8 +597,8 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # learn the environments in all_env_pretraining
-    model = learn_envs(all_env_pretraining)
-    # evaluate_all_trained_models()
+    model = learn_envs(all_env_pretraining, max_iterations=10000)
+    evaluate_all_trained_models()
 
     # # evaluate the model
     # model = PPO.load('data/trained/simplest_simplest_546025.6070834016_996382.4069940181.z8/Models/final_model.zip')

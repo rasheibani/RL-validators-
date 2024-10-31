@@ -562,7 +562,7 @@ def evaluate_all_trained_models():
         df = df._append(
             {'Model': subfolder.split('_')[0:2], 'Mean Reward': round(mean_reward), 'Std Reward': round(std_reward),
              'Complexity_of_Environment': complexity}, ignore_index=True)
-        df.to_csv('data/evaluation_results.csv')
+        df.to_csv('data/evaluation_result_DQNs.csv')
         print(f"Mean reward: {mean_reward}, Std reward: {std_reward}")
         print(f"Model {subfolder} evaluated successfully")
 

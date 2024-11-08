@@ -5,15 +5,12 @@ from gymnasium import spaces
 import numpy as np
 import spacy
 import re
-from stable_baselines3 import DQN, PPO
+from stable_baselines3 import DQN
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, \
-    StopTrainingOnNoModelImprovement
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, StopTrainingOnNoModelImprovement
 from stable_baselines3.common.monitor import Monitor
 import os
-
-import Pretraining
 from z8file_to_dictionaries import z8file_to_dictionaries
 from tqdm import tqdm  # For progress bars
 
@@ -27,7 +24,6 @@ GRAMMAR_DIRECTIONS = {
 # Maximum distance for normalization (adjust based on your environment)
 MAX_DISTANCE = 2000.0  # Example value
 
-
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
     pattern = r"X:\s*([\d.]+)\s*\nY:\s*([\d.]+)"
@@ -39,7 +35,6 @@ def extract_coordinates(game_state):
         return np.array([x, y])
     else:
         return np.array([0, 0])
-
 
 def text_to_action(text, directions):
     """
@@ -54,7 +49,6 @@ def text_to_action(text, directions):
     """
     mapping = {direction: idx for idx, direction in enumerate(directions)}
     return mapping.get(text.strip().lower(), -1)
-
 
 def sentence_from_action(action, directions):
     """
@@ -72,20 +66,18 @@ def sentence_from_action(action, directions):
     else:
         return "look"
 
-
 def normalize(observation):
     # Separate the components
     max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
-    admissible_actions = observation[:max_directions]  # Adjust based on maximum directions
-    route_instructions = observation[max_directions:-1]  # Next part are route instructions
-    instruction_index = observation[-1]  # Last is instruction index
+    admissible_actions = observation[:max_directions]  # 8
+    route_instructions = observation[max_directions:-1]  # 15
+    instruction_index = observation[-1]  # 1
 
     # Normalize admissible actions (already in [0, 1])
     normalized_admissible_actions = admissible_actions
 
     # Normalize route instructions, treating max_directions as padding and replacing it with -1
-    normalized_route_instructions = np.where(route_instructions != max_directions,
-                                             route_instructions / (max_directions - 1), -1)
+    normalized_route_instructions = np.where(route_instructions != max_directions, route_instructions / (max_directions - 1), -1)
 
     # Normalize instruction index
     max_instruction_index = len(route_instructions)
@@ -98,23 +90,21 @@ def normalize(observation):
 
     return normalized_observation
 
-
 def get_admissible_actions(feedback, directions):
     admissible_actions = []
     for direction in directions:
-        pattern = r'going ' + direction + r'\b'  # Added word boundary to prevent partial matches
+        pattern = r'\bgoing ' + direction + r'\b'  # Added word boundaries to prevent partial matches
         if re.search(pattern, feedback, re.IGNORECASE):
             admissible_actions.append('go ' + direction)
     return admissible_actions
 
-
 def admissible_actions_to_observation(admissible_actions, directions):
-    observation = np.zeros(len(directions), dtype=np.int32)
+    max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
+    observation = np.zeros(max_directions, dtype=np.int32)
     for i, direction in enumerate(directions):
         if f"go {direction}" in admissible_actions:
             observation[i] = 1
     return observation
-
 
 def extract_area_id(feedback):
     pattern = r"An area \((\d+)\) in r(\d+)"
@@ -130,10 +120,8 @@ def extract_area_id(feedback):
         print("-" * 50)
         return None
 
-
 class TextWorldEnv(gym.Env):
-    def __init__(self, game_dict, room_positions, x_destination=None, y_destination=None, n_instructions=5, grammar=8,
-                 reward_type='sparse'):
+    def __init__(self, game_dict, room_positions, x_destination=None, y_destination=None, n_instructions=5, grammar=8, reward_type='sparse'):
         super(TextWorldEnv, self).__init__()
         self.game_dict = game_dict  # The game dictionary
         self.room_positions = room_positions  # Mapping from room IDs to (x, y) coordinates
@@ -158,8 +146,9 @@ class TextWorldEnv(gym.Env):
         else:
             raise ValueError("Invalid grammar. Choose from 4, 6, or 8.")
 
-        self.action_space = spaces.Discrete(len(self.directions) + 1)  # +1 for "look"
-        self.observation_space = spaces.Box(low=0, high=8, shape=(24,), dtype=np.int32)
+        self.max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
+        self.action_space = spaces.Discrete(self.max_directions + 1)  # +1 for "look"
+        self.observation_space = spaces.Box(low=0, high=8, shape=(self.max_directions + 15 + 1,), dtype=np.int32)
 
     def text_to_action_func(self, text):
         return text_to_action(text, self.directions)
@@ -219,8 +208,7 @@ class TextWorldEnv(gym.Env):
             rti = kwargs['route_instructions']
             # Handle incomplete route instructions by allowing missing steps
             self.route_instructions = [self.text_to_action_func(instr) for instr in rti.split('. ')]
-            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(
-                self.route_instructions)
+            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
         else:
             self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
 
@@ -246,7 +234,7 @@ class TextWorldEnv(gym.Env):
                 self.route_instructions,
                 (0, 15 - len(self.route_instructions)),
                 'constant',
-                constant_values=len(self.directions)  # Use len(directions) as padding value
+                constant_values=self.max_directions  # Use max_directions as padding value
             )
         else:
             return self.route_instructions[:15]
@@ -265,7 +253,7 @@ class TextWorldEnv(gym.Env):
         admissible_actions = self.get_admissible_actions()
 
         # Define "look" action
-        look_action_index = len(self.directions)
+        look_action_index = self.max_directions
         if action == look_action_index:
             if self.reward_type == 'sparse':
                 reward = -1
@@ -339,7 +327,6 @@ class TextWorldEnv(gym.Env):
     def __len__(self):
         return 1  # Only one game running at a time
 
-
 def determine_complexity(env_name):
     """
     Determines the complexity level based on the environment name.
@@ -365,7 +352,6 @@ def determine_complexity(env_name):
         complexity = 0.0  # Default value
     return complexity
 
-
 def assign_complexity_category_updated(complexity):
     """
     Assigns a complexity category based on the complexity value.
@@ -386,7 +372,6 @@ def assign_complexity_category_updated(complexity):
         return '0.76-1'
     else:
         return 'Unknown'
-
 
 def load_envs():
     """
@@ -416,7 +401,6 @@ def load_envs():
                 })
     return all_env_pretraining
 
-
 def get_all_possible_envs():
     """
     Retrieves all possible environments from the 'data/Environments' directory.
@@ -444,7 +428,6 @@ def get_all_possible_envs():
             })
     return all_envs
 
-
 def determine_n_instructions(env_name):
     """
     Determines the number of instructions based on the environment name.
@@ -468,7 +451,6 @@ def determine_n_instructions(env_name):
     else:
         n_instructions = 1  # Default value
     return n_instructions
-
 
 def evaluate_random_agent(env, n_eval_episodes=100, verbose=False):
     """
@@ -498,7 +480,7 @@ def evaluate_random_agent(env, n_eval_episodes=100, verbose=False):
 
             if not admissible_actions:
                 # No admissible actions available, take a default action ("look")
-                action = len(env.directions)  # Assuming "look" is the last action
+                action = env.max_directions  # Assuming "look" is the last action
             else:
                 # Select a random action from admissible actions
                 action = random.choice(admissible_actions)
@@ -527,7 +509,6 @@ def evaluate_random_agent(env, n_eval_episodes=100, verbose=False):
 
     return average_success_rate, std_success_rate
 
-
 def get_admissible_actions_from_observation(observation, directions):
     """
     Extracts admissible action indices from the normalized observation.
@@ -543,7 +524,6 @@ def get_admissible_actions_from_observation(observation, directions):
     admissible_actions = [action for action, flag in enumerate(admissible_flags) if flag == 1]
     return admissible_actions
 
-
 def extract_distance_from_observation(observation):
     """
     Extracts the distance from the normalized observation.
@@ -554,11 +534,10 @@ def extract_distance_from_observation(observation):
     Returns:
     - float: The current distance to the destination.
     """
-    # Assuming that 'distance' is the last element of the observation
+    # Assuming that 'distance' is the second last element of the observation
     # Adjust the index based on your observation structure
-    distance = observation[-1] * MAX_DISTANCE  # Replace MAX_DISTANCE with your scaling factor
+    distance = observation[-2] * MAX_DISTANCE  # Replace MAX_DISTANCE with your scaling factor
     return distance
-
 
 def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_model=5, random_seed=42):
     """
@@ -639,8 +618,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                 eval_envs = selected_seen_envs + selected_unseen_envs
 
                 # Iterate through each environment with progress bar
-                for env_info in tqdm(eval_envs, desc=f"Grammar {grammar} - Reward {reward_type} - Model {model_folder}",
-                                     leave=False):
+                for env_info in tqdm(eval_envs, desc=f"Grammar {grammar} - Reward {reward_type} - Model {model_folder}", leave=False):
                     env_name = env_info['env']
                     is_seen = 'seen' if env_name in seen_env_names else 'unseen'
 
@@ -685,8 +663,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                         average_success_rate = sum(successes) / len(successes)
                         std_success_rate = np.std(successes)
                     except Exception as e:
-                        print(
-                            f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar}: {e}")
+                        print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar}: {e}")
                         continue
 
                     # Evaluate the random agent on the same environment with complete instructions
@@ -699,8 +676,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             grammar=grammar,
                             reward_type=reward_type
                         )
-                        random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log',
-                                             allow_early_resets=True)
+                        random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log', allow_early_resets=True)
 
                         random_average_success_rate, random_std_success_rate = evaluate_random_agent(
                             random_env,
@@ -726,16 +702,13 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                         'evaluated_env': is_seen
                     })
 
-                    print(
-                        f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Complete, {is_seen})")
-                    print(
-                        f"Random Agent - Average Success Rate: {random_average_success_rate}, Std: {random_std_success_rate}")
+                    print(f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Complete, {is_seen})")
+                    print(f"Random Agent - Average Success Rate: {random_average_success_rate}, Std: {random_std_success_rate}")
 
                     # Now evaluate with incomplete instructions by omitting one step (excluding first and last)
                     # Ensure that the route instructions have at least 3 steps to omit one
                     if len(env.route_instructions) >= 3:
-                        # Choose the step to omit (e.g., the 6th step if exists, else a random step excluding first
-                        # and last)
+                        # Choose the step to omit (e.g., the 6th step if exists, else a random step excluding first and last)
                         omit_step_index = 5  # 0-based index for the 6th step
                         if len(env.route_instructions) > omit_step_index:
                             omitted_step = env.route_instructions.pop(omit_step_index)
@@ -745,9 +718,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             omitted_step = env.route_instructions.pop(omit_step_index)
 
                         # Reconstruct the incomplete route instruction string
-                        incomplete_route_instruction = '. '.join(
-                            [sentence_from_action(action, env.directions) for action in
-                             env.route_instructions]) + '. Arrive at destination!'
+                        incomplete_route_instruction = '. '.join([sentence_from_action(action, env.directions) for action in env.route_instructions]) + '. Arrive at destination!'
 
                         # Create a new environment instance for incomplete instructions
                         try:
@@ -758,12 +729,10 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                                 grammar=grammar,
                                 reward_type=reward_type
                             )
-                            env_incomplete = Monitor(env_incomplete, filename=f'{env_logs_dir}/monitor_incomplete.log',
-                                                     allow_early_resets=True)
+                            env_incomplete = Monitor(env_incomplete, filename=f'{env_logs_dir}/monitor_incomplete.log', allow_early_resets=True)
 
                             # Reset with incomplete instructions
-                            observation_incomplete, _ = env_incomplete.reset(
-                                route_instructions=incomplete_route_instruction)
+                            observation_incomplete, _ = env_incomplete.reset(route_instructions=incomplete_route_instruction)
 
                             # Evaluate the trained model on incomplete instructions
                             episode_rewards_incomplete, _ = evaluate_policy(
@@ -781,8 +750,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             average_success_rate_incomplete = sum(successes_incomplete) / len(successes_incomplete)
                             std_success_rate_incomplete = np.std(successes_incomplete)
                         except Exception as e:
-                            print(
-                                f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete): {e}")
+                            print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete): {e}")
                             average_success_rate_incomplete = np.nan
                             std_success_rate_incomplete = np.nan
 
@@ -796,13 +764,10 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                                 grammar=grammar,
                                 reward_type=reward_type
                             )
-                            random_env_incomplete = Monitor(random_env_incomplete,
-                                                            filename=f'{env_logs_dir}/random_agent_monitor_incomplete.log',
-                                                            allow_early_resets=True)
+                            random_env_incomplete = Monitor(random_env_incomplete, filename=f'{env_logs_dir}/random_agent_monitor_incomplete.log', allow_early_resets=True)
 
                             # Reset with incomplete instructions
-                            observation_random_incomplete, _ = random_env_incomplete.reset(
-                                route_instructions=incomplete_route_instruction)
+                            observation_random_incomplete, _ = random_env_incomplete.reset(route_instructions=incomplete_route_instruction)
 
                             random_average_success_rate_incomplete, random_std_success_rate_incomplete = evaluate_random_agent(
                                 random_env_incomplete,
@@ -810,8 +775,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                                 verbose=False
                             )
                         except Exception as e:
-                            print(
-                                f"Failed to evaluate random agent on environment {env_name} with grammar {grammar} (Incomplete): {e}")
+                            print(f"Failed to evaluate random agent on environment {env_name} with grammar {grammar} (Incomplete): {e}")
                             random_average_success_rate_incomplete = np.nan
                             random_std_success_rate_incomplete = np.nan
 
@@ -829,10 +793,8 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             'evaluated_env': is_seen
                         })
 
-                        print(
-                            f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Incomplete, {is_seen})")
-                        print(
-                            f"Random Agent - Average Success Rate: {random_average_success_rate_incomplete}, Std: {random_std_success_rate_incomplete}")
+                        print(f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Incomplete, {is_seen})")
+                        print(f"Random Agent - Average Success Rate: {random_average_success_rate_incomplete}, Std: {random_std_success_rate_incomplete}")
 
         # Create DataFrame from results
         df = pd.DataFrame(results)
@@ -842,7 +804,6 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
         print(df)
 
         print("All models evaluated and results saved to 'data/evaluation_results.csv'")
-
 
 def learn_envs(environments, max_iterations=10000):
     """
@@ -902,8 +863,7 @@ def learn_envs(environments, max_iterations=10000):
             if reward_type == 'sparse':
                 callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
                 callbacks.append(callbackOnBest)
-            callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10,
-                                                                       verbose=1)
+            callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
             callbacks.append(callbackOnNoImprovement)
 
             callback = EvalCallback(
@@ -930,7 +890,7 @@ def learn_envs(environments, max_iterations=10000):
             )
 
             # Save the model after training
-            model_save_path = f'{env_model_dir}/final_modeldict_{reward_type}'
+            model_save_path = f'{env_model_dir}/final_modeldict_{reward_type}.zip'
             model.save(model_save_path)
             print(f"  Saved model to {model_save_path}")
 
@@ -943,7 +903,6 @@ def learn_envs(environments, max_iterations=10000):
 
     return models
 
-
 def predict_proba(model, state):
     print(state)
     obs = model.policy.obs_to_tensor(state)[0]
@@ -955,7 +914,6 @@ def predict_proba(model, state):
     # normalize the probabilities
     probs_np = probs_np / np.sum(probs_np)
     return probs_np
-
 
 def eval_by_interaction(model, env_info, route_instruction):
     env_name = env_info['env']
@@ -998,7 +956,6 @@ def eval_by_interaction(model, env_info, route_instruction):
             print("Terminating the episode")
             break
 
-
 if __name__ == "__main__":
     # Load the NLP model (ensure it's installed)
     nlp = spacy.load("en_core_web_sm")
@@ -1012,9 +969,9 @@ if __name__ == "__main__":
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
-        max_seen_envs_per_model=5,  # Limit for seen environments
-        max_unseen_envs_per_model=5,  # Limit for unseen environments
-        random_seed=42  # Seed for reproducibility
+        max_seen_envs_per_model=5,        # Limit for seen environments
+        max_unseen_envs_per_model=5,      # Limit for unseen environments
+        random_seed=42                     # Seed for reproducibility
     )
 
     # Example evaluation by interaction (optional)

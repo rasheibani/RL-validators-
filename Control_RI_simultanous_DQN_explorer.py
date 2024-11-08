@@ -1,5 +1,4 @@
 import random
-from asyncio import current_task
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
@@ -9,13 +8,12 @@ import re
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, StopTrainingOnNoModelImprovement
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, \
+    StopTrainingOnNoModelImprovement
 from stable_baselines3.common.monitor import Monitor
-import multiprocessing
-import Pretraining
-from stable_baselines3.common.policies import obs_as_tensor
-import xml.etree.ElementTree as ET
 import os
+
+import Pretraining
 from z8file_to_dictionaries import z8file_to_dictionaries
 from tqdm import tqdm  # For progress bars
 
@@ -29,6 +27,7 @@ GRAMMAR_DIRECTIONS = {
 # Maximum distance for normalization (adjust based on your environment)
 MAX_DISTANCE = 2000.0  # Example value
 
+
 def extract_coordinates(game_state):
     # Regular expression pattern to match the X and Y values
     pattern = r"X:\s*([\d.]+)\s*\nY:\s*([\d.]+)"
@@ -40,6 +39,7 @@ def extract_coordinates(game_state):
         return np.array([x, y])
     else:
         return np.array([0, 0])
+
 
 def text_to_action(text, directions):
     """
@@ -54,6 +54,7 @@ def text_to_action(text, directions):
     """
     mapping = {direction: idx for idx, direction in enumerate(directions)}
     return mapping.get(text.strip().lower(), -1)
+
 
 def sentence_from_action(action, directions):
     """
@@ -71,19 +72,20 @@ def sentence_from_action(action, directions):
     else:
         return "look"
 
+
 def normalize(observation):
     # Separate the components
-    admissible_actions = observation[:len(GRAMMAR_DIRECTIONS[8])]  # Adjust based on maximum directions
-    route_instructions = observation[len(GRAMMAR_DIRECTIONS[8]):-1]  # Next part are route instructions
+    max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
+    admissible_actions = observation[:max_directions]  # Adjust based on maximum directions
+    route_instructions = observation[max_directions:-1]  # Next part are route instructions
     instruction_index = observation[-1]  # Last is instruction index
 
     # Normalize admissible actions (already in [0, 1])
     normalized_admissible_actions = admissible_actions
 
-    # Normalize route instructions, treating 8 as padding and replacing it with -1
-    # Adjust padding value based on the maximum number of directions
-    max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
-    normalized_route_instructions = np.where(route_instructions != max_directions, route_instructions / (max_directions - 1), -1)
+    # Normalize route instructions, treating max_directions as padding and replacing it with -1
+    normalized_route_instructions = np.where(route_instructions != max_directions,
+                                             route_instructions / (max_directions - 1), -1)
 
     # Normalize instruction index
     max_instruction_index = len(route_instructions)
@@ -96,13 +98,15 @@ def normalize(observation):
 
     return normalized_observation
 
+
 def get_admissible_actions(feedback, directions):
     admissible_actions = []
     for direction in directions:
-        pattern = r'going ' + direction + ' '
+        pattern = r'going ' + direction + r'\b'  # Added word boundary to prevent partial matches
         if re.search(pattern, feedback, re.IGNORECASE):
             admissible_actions.append('go ' + direction)
     return admissible_actions
+
 
 def admissible_actions_to_observation(admissible_actions, directions):
     observation = np.zeros(len(directions), dtype=np.int32)
@@ -110,6 +114,7 @@ def admissible_actions_to_observation(admissible_actions, directions):
         if f"go {direction}" in admissible_actions:
             observation[i] = 1
     return observation
+
 
 def extract_area_id(feedback):
     pattern = r"An area \((\d+)\) in r(\d+)"
@@ -125,14 +130,17 @@ def extract_area_id(feedback):
         print("-" * 50)
         return None
 
+
 class TextWorldEnv(gym.Env):
-    def __init__(self, game_dict, room_positions, x_destination=None, y_destination=None, n_instructions=5, grammar=8):
+    def __init__(self, game_dict, room_positions, x_destination=None, y_destination=None, n_instructions=5, grammar=8,
+                 reward_type='sparse'):
         super(TextWorldEnv, self).__init__()
         self.game_dict = game_dict  # The game dictionary
         self.room_positions = room_positions  # Mapping from room IDs to (x, y) coordinates
         self.current_room_id = None
         self.n_instructions = n_instructions
         self.grammar = grammar  # 4, 6, or 8
+        self.reward_type = reward_type  # 'sparse' or 'step_cost'
         self.instruction_index = 0
         self.route_instructions = []
         self.visited_states_actions = set()
@@ -209,8 +217,10 @@ class TextWorldEnv(gym.Env):
 
         if 'route_instructions' in kwargs:
             rti = kwargs['route_instructions']
+            # Handle incomplete route instructions by allowing missing steps
             self.route_instructions = [self.text_to_action_func(instr) for instr in rti.split('. ')]
-            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
+            self.x_destination, self.y_destination = self.get_destination_from_route_instructions(
+                self.route_instructions)
         else:
             self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
 
@@ -257,14 +267,20 @@ class TextWorldEnv(gym.Env):
         # Define "look" action
         look_action_index = len(self.directions)
         if action == look_action_index:
-            reward = -1
+            if self.reward_type == 'sparse':
+                reward = -1
+            elif self.reward_type == 'step_cost':
+                reward = -0.5  # Step cost
             terminate = False
             truncated = False
             observation = self.construct_observation(admissible_actions)
             return observation, reward, terminate, truncated, {}
 
         if sentence not in admissible_actions:
-            reward = -1
+            if self.reward_type == 'sparse':
+                reward = -1
+            elif self.reward_type == 'step_cost':
+                reward = -0.5  # Step cost for invalid action
             terminate = False
             truncated = False
             observation = self.construct_observation(admissible_actions)
@@ -273,7 +289,10 @@ class TextWorldEnv(gym.Env):
             # Move to the next room
             next_room_id = self.game_dict[self.current_room_id][sentence]
             if next_room_id is None:
-                reward = -1
+                if self.reward_type == 'sparse':
+                    reward = -1
+                elif self.reward_type == 'step_cost':
+                    reward = -0.5  # Step cost for invalid action
                 terminate = False
                 truncated = False
                 observation = self.construct_observation(admissible_actions)
@@ -291,14 +310,18 @@ class TextWorldEnv(gym.Env):
                 terminate = True
                 truncated = False
             else:
-                if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold - 1:
-                    reward = -1
-                    terminate = False
-                    truncated = True
-                    observation = self.construct_observation(admissible_actions)
-                    self.instruction_index += 1
-                    return observation, reward, terminate, truncated, {}
-                reward = 0
+                if self.reward_type == 'step_cost':
+                    reward = -0.5  # Step cost
+                elif self.reward_type == 'sparse':
+                    # Check for step limit
+                    if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold - 1:
+                        reward = -1
+                        terminate = False
+                        truncated = True
+                        observation = self.construct_observation(admissible_actions)
+                        self.instruction_index += 1
+                        return observation, reward, terminate, truncated, {}
+                    reward = 0
                 terminate = False
                 truncated = False
 
@@ -315,6 +338,7 @@ class TextWorldEnv(gym.Env):
 
     def __len__(self):
         return 1  # Only one game running at a time
+
 
 def determine_complexity(env_name):
     """
@@ -341,6 +365,7 @@ def determine_complexity(env_name):
         complexity = 0.0  # Default value
     return complexity
 
+
 def assign_complexity_category_updated(complexity):
     """
     Assigns a complexity category based on the complexity value.
@@ -361,6 +386,7 @@ def assign_complexity_category_updated(complexity):
         return '0.76-1'
     else:
         return 'Unknown'
+
 
 def load_envs():
     """
@@ -390,6 +416,7 @@ def load_envs():
                 })
     return all_env_pretraining
 
+
 def get_all_possible_envs():
     """
     Retrieves all possible environments from the 'data/Environments' directory.
@@ -417,6 +444,7 @@ def get_all_possible_envs():
             })
     return all_envs
 
+
 def determine_n_instructions(env_name):
     """
     Determines the number of instructions based on the environment name.
@@ -440,6 +468,7 @@ def determine_n_instructions(env_name):
     else:
         n_instructions = 1  # Default value
     return n_instructions
+
 
 def evaluate_random_agent(env, n_eval_episodes=100, verbose=False):
     """
@@ -498,6 +527,7 @@ def evaluate_random_agent(env, n_eval_episodes=100, verbose=False):
 
     return average_success_rate, std_success_rate
 
+
 def get_admissible_actions_from_observation(observation, directions):
     """
     Extracts admissible action indices from the normalized observation.
@@ -513,6 +543,7 @@ def get_admissible_actions_from_observation(observation, directions):
     admissible_actions = [action for action, flag in enumerate(admissible_flags) if flag == 1]
     return admissible_actions
 
+
 def extract_distance_from_observation(observation):
     """
     Extracts the distance from the normalized observation.
@@ -527,6 +558,7 @@ def extract_distance_from_observation(observation):
     # Adjust the index based on your observation structure
     distance = observation[-1] * MAX_DISTANCE  # Replace MAX_DISTANCE with your scaling factor
     return distance
+
 
 def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_model=5, random_seed=42):
     """
@@ -561,128 +593,271 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
     # Iterate through each trained model with progress bar
     trained_models = sorted(os.listdir('data/trained'))
     for model_index, model_folder in enumerate(tqdm(trained_models, desc="Evaluating Models")):
-        model_path = f'data/trained/{model_folder}/Models/final_modeldict.zip'
-
-        # Check if model file exists
-        if not os.path.exists(model_path):
-            print(f"Model file {model_path} does not exist. Skipping.")
+        model_dir = f'data/trained/{model_folder}/Models'
+        if not os.path.isdir(model_dir):
+            print(f"No Models directory found in {model_dir}. Skipping.")
             continue
 
-        # Load the model
-        try:
-            model = DQN.load(model_path, device='cuda' if torch.cuda.is_available() else 'cpu')
-            print(f"Loaded model from {model_path}")
-        except Exception as e:
-            print(f"Failed to load model from {model_path}: {e}")
-            continue
+        # Define reward types
+        reward_types = ['sparse', 'step_cost']
 
-        # Determine the environments the model was trained on (seen)
-        # In curriculum learning, each model may have been trained on all previous environments
-        seen_envs_for_model = all_env_pretraining[:model_index + 1]
+        for reward_type in reward_types:
+            model_path = f'data/trained/{model_folder}/Models/final_modeldict_{reward_type}.zip'
 
-        # Loop through each grammar
-        for grammar in grammars:
-            # Limit the number of seen environments
-            if len(seen_envs_for_model) > max_seen_envs_per_model:
-                selected_seen_envs = random.sample(seen_envs_for_model, max_seen_envs_per_model)
-            else:
-                selected_seen_envs = seen_envs_for_model
+            # Check if model file exists
+            if not os.path.exists(model_path):
+                print(f"Model file {model_path} does not exist. Skipping.")
+                continue
 
-            # Define unseen environments for this model
-            if len(unseen_envs) > max_unseen_envs_per_model:
-                selected_unseen_envs = random.sample(unseen_envs, max_unseen_envs_per_model)
-            else:
-                selected_unseen_envs = unseen_envs
+            # Load the model
+            try:
+                model = DQN.load(model_path, device='cuda' if torch.cuda.is_available() else 'cpu')
+                print(f"Loaded model from {model_path}")
+            except Exception as e:
+                print(f"Failed to load model from {model_path}: {e}")
+                continue
 
-            # Combine selected seen and unseen environments
-            eval_envs = selected_seen_envs + selected_unseen_envs
+            # Determine the environments the model was trained on (seen)
+            # In curriculum learning, each model may have been trained on all previous environments
+            seen_envs_for_model = all_env_pretraining[:model_index + 1]
 
-            # Iterate through each environment with progress bar
-            for env_info in tqdm(eval_envs, desc=f"Grammar {grammar} - Evaluating Envs for Model {model_folder}", leave=False):
-                env_name = env_info['env']
-                is_seen = 'seen' if env_name in seen_env_names else 'unseen'
+            # Loop through each grammar
+            for grammar in grammars:
+                # Limit the number of seen environments
+                if len(seen_envs_for_model) > max_seen_envs_per_model:
+                    selected_seen_envs = random.sample(seen_envs_for_model, max_seen_envs_per_model)
+                else:
+                    selected_seen_envs = seen_envs_for_model
 
-                # Determine the complexity of the environment
-                complexity = determine_complexity(env_name)
-                complexity = assign_complexity_category_updated(complexity)
+                # Define unseen environments for this model
+                if len(unseen_envs) > max_unseen_envs_per_model:
+                    selected_unseen_envs = random.sample(unseen_envs, max_unseen_envs_per_model)
+                else:
+                    selected_unseen_envs = unseen_envs
 
-                # Load game dictionary and room positions
-                gameaddress = f'data/Environments/{env_name}'
-                try:
-                    game_dict, room_positions = z8file_to_dictionaries(gameaddress)
-                except Exception as e:
-                    print(f"Failed to load game dictionary from {gameaddress}: {e}")
-                    continue
+                # Combine selected seen and unseen environments
+                eval_envs = selected_seen_envs + selected_unseen_envs
 
-                # Create the TextWorldEnv with the specified grammar
-                env = TextWorldEnv(
-                    game_dict=game_dict,
-                    room_positions=room_positions,
-                    n_instructions=15,  # Adjust as needed
-                    grammar=grammar
-                )
-                env_logs_dir = f'data/trained/{model_folder}/Logs'
-                os.makedirs(env_logs_dir, exist_ok=True)
-                env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+                # Iterate through each environment with progress bar
+                for env_info in tqdm(eval_envs, desc=f"Grammar {grammar} - Reward {reward_type} - Model {model_folder}",
+                                     leave=False):
+                    env_name = env_info['env']
+                    is_seen = 'seen' if env_name in seen_env_names else 'unseen'
 
-                # Evaluate the trained model
-                try:
-                    episode_rewards, _ = evaluate_policy(
-                        model,
-                        env,
-                        n_eval_episodes=100,
-                        deterministic=False,
-                        render=False,
-                        callback=None,
-                        reward_threshold=None,
-                        return_episode_rewards=True,
-                        warn=False
-                    )
-                    successes = [1 if reward >= 25 else 0 for reward in episode_rewards]
-                    average_success_rate = sum(successes) / len(successes)
-                    std_success_rate = np.std(successes)
-                except Exception as e:
-                    print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar}: {e}")
-                    continue
+                    # Determine the complexity of the environment
+                    complexity = determine_complexity(env_name)
+                    complexity = assign_complexity_category_updated(complexity)
 
-                # Evaluate the random agent on the same environment
-                try:
-                    # Create a fresh environment instance for the random agent with the same grammar
-                    random_env = TextWorldEnv(
+                    # Load game dictionary and room positions
+                    gameaddress = f'data/Environments/{env_name}'
+                    try:
+                        game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+                    except Exception as e:
+                        print(f"Failed to load game dictionary from {gameaddress}: {e}")
+                        continue
+
+                    # Create the TextWorldEnv with the specified grammar and reward_type
+                    env = TextWorldEnv(
                         game_dict=game_dict,
                         room_positions=room_positions,
-                        n_instructions=15,  # Must match the main env
-                        grammar=grammar
+                        n_instructions=15,  # Adjust as needed
+                        grammar=grammar,
+                        reward_type=reward_type
                     )
-                    random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log', allow_early_resets=True)
+                    env_logs_dir = f'data/trained/{model_folder}/Logs'
+                    os.makedirs(env_logs_dir, exist_ok=True)
+                    env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
-                    random_average_success_rate, random_std_success_rate = evaluate_random_agent(
-                        random_env,
-                        n_eval_episodes=100,
-                        verbose=False
-                    )
-                except Exception as e:
-                    print(f"Failed to evaluate random agent on environment {env_name} with grammar {grammar}: {e}")
-                    random_average_success_rate = np.nan
-                    random_std_success_rate = np.nan
+                    # Evaluate the trained model with complete instructions
+                    try:
+                        episode_rewards, _ = evaluate_policy(
+                            model,
+                            env,
+                            n_eval_episodes=100,
+                            deterministic=False,
+                            render=False,
+                            callback=None,
+                            reward_threshold=None,
+                            return_episode_rewards=True,
+                            warn=False
+                        )
+                        successes = [1 if reward >= 25 else 0 for reward in episode_rewards]
+                        average_success_rate = sum(successes) / len(successes)
+                        std_success_rate = np.std(successes)
+                    except Exception as e:
+                        print(
+                            f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar}: {e}")
+                        continue
 
-                # Append the results to the list
-                results.append({
-                    'name_of_env': env_name,
-                    'complexity': complexity,
-                    'grammar': grammar,
-                    'average_success_rate': average_success_rate,
-                    'std_success_rate': std_success_rate,
-                    'random_agent_average_success_rate': random_average_success_rate,
-                    'random_agent_std_success_rate': random_std_success_rate,
-                    'evaluated_env': is_seen
-                })
+                    # Evaluate the random agent on the same environment with complete instructions
+                    try:
+                        # Create a fresh environment instance for the random agent with the same grammar and reward_type
+                        random_env = TextWorldEnv(
+                            game_dict=game_dict,
+                            room_positions=room_positions,
+                            n_instructions=15,  # Must match the main env
+                            grammar=grammar,
+                            reward_type=reward_type
+                        )
+                        random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log',
+                                             allow_early_resets=True)
 
-                print(f"Model {model_folder} evaluated on environment {env_name} with grammar {grammar} ({is_seen})")
-                print(f"Random Agent - Average Success Rate: {random_average_success_rate}, Std: {random_std_success_rate}")
+                        random_average_success_rate, random_std_success_rate = evaluate_random_agent(
+                            random_env,
+                            n_eval_episodes=100,
+                            verbose=False
+                        )
+                    except Exception as e:
+                        print(f"Failed to evaluate random agent on environment {env_name} with grammar {grammar}: {e}")
+                        random_average_success_rate = np.nan
+                        random_std_success_rate = np.nan
+
+                    # Append the results for complete instructions
+                    results.append({
+                        'name_of_env': env_name,
+                        'complexity': complexity,
+                        'grammar': grammar,
+                        'instruction_type': 'complete',
+                        'reward_type': reward_type,
+                        'average_success_rate': average_success_rate,
+                        'std_success_rate': std_success_rate,
+                        'random_agent_average_success_rate': random_average_success_rate,
+                        'random_agent_std_success_rate': random_std_success_rate,
+                        'evaluated_env': is_seen
+                    })
+
+                    print(
+                        f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Complete, {is_seen})")
+                    print(
+                        f"Random Agent - Average Success Rate: {random_average_success_rate}, Std: {random_std_success_rate}")
+
+                    # Now evaluate with incomplete instructions by omitting one step (excluding first and last)
+                    # Ensure that the route instructions have at least 3 steps to omit one
+                    if len(env.route_instructions) >= 3:
+                        # Choose the step to omit (e.g., the 6th step if exists, else a random step excluding first
+                        # and last)
+                        omit_step_index = 5  # 0-based index for the 6th step
+                        if len(env.route_instructions) > omit_step_index:
+                            omitted_step = env.route_instructions.pop(omit_step_index)
+                        else:
+                            # Randomly choose a step to omit excluding first and last
+                            omit_step_index = random.randint(1, len(env.route_instructions) - 2)
+                            omitted_step = env.route_instructions.pop(omit_step_index)
+
+                        # Reconstruct the incomplete route instruction string
+                        incomplete_route_instruction = '. '.join(
+                            [sentence_from_action(action, env.directions) for action in
+                             env.route_instructions]) + '. Arrive at destination!'
+
+                        # Create a new environment instance for incomplete instructions
+                        try:
+                            env_incomplete = TextWorldEnv(
+                                game_dict=game_dict,
+                                room_positions=room_positions,
+                                n_instructions=15,  # Must match the main env
+                                grammar=grammar,
+                                reward_type=reward_type
+                            )
+                            env_incomplete = Monitor(env_incomplete, filename=f'{env_logs_dir}/monitor_incomplete.log',
+                                                     allow_early_resets=True)
+
+                            # Reset with incomplete instructions
+                            observation_incomplete, _ = env_incomplete.reset(
+                                route_instructions=incomplete_route_instruction)
+
+                            # Evaluate the trained model on incomplete instructions
+                            episode_rewards_incomplete, _ = evaluate_policy(
+                                model,
+                                env_incomplete,
+                                n_eval_episodes=100,
+                                deterministic=False,
+                                render=False,
+                                callback=None,
+                                reward_threshold=None,
+                                return_episode_rewards=True,
+                                warn=False
+                            )
+                            successes_incomplete = [1 if reward >= 25 else 0 for reward in episode_rewards_incomplete]
+                            average_success_rate_incomplete = sum(successes_incomplete) / len(successes_incomplete)
+                            std_success_rate_incomplete = np.std(successes_incomplete)
+                        except Exception as e:
+                            print(
+                                f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete): {e}")
+                            average_success_rate_incomplete = np.nan
+                            std_success_rate_incomplete = np.nan
+
+                        # Evaluate the random agent on the same environment with incomplete instructions
+                        try:
+                            # Create a fresh environment instance for the random agent with the same grammar and reward_type
+                            random_env_incomplete = TextWorldEnv(
+                                game_dict=game_dict,
+                                room_positions=room_positions,
+                                n_instructions=15,  # Must match the main env
+                                grammar=grammar,
+                                reward_type=reward_type
+                            )
+                            random_env_incomplete = Monitor(random_env_incomplete,
+                                                            filename=f'{env_logs_dir}/random_agent_monitor_incomplete.log',
+                                                            allow_early_resets=True)
+
+                            # Reset with incomplete instructions
+                            observation_random_incomplete, _ = random_env_incomplete.reset(
+                                route_instructions=incomplete_route_instruction)
+
+                            random_average_success_rate_incomplete, random_std_success_rate_incomplete = evaluate_random_agent(
+                                random_env_incomplete,
+                                n_eval_episodes=100,
+                                verbose=False
+                            )
+                        except Exception as e:
+                            print(
+                                f"Failed to evaluate random agent on environment {env_name} with grammar {grammar} (Incomplete): {e}")
+                            random_average_success_rate_incomplete = np.nan
+                            random_std_success_rate_incomplete = np.nan
+
+                        # Append the results for incomplete instructions
+                        results.append({
+                            'name_of_env': env_name,
+                            'complexity': complexity,
+                            'grammar': grammar,
+                            'instruction_type': 'incomplete',
+                            'reward_type': reward_type,
+                            'average_success_rate': average_success_rate_incomplete,
+                            'std_success_rate': std_success_rate_incomplete,
+                            'random_agent_average_success_rate': random_average_success_rate_incomplete,
+                            'random_agent_std_success_rate': random_std_success_rate_incomplete,
+                            'evaluated_env': is_seen
+                        })
+
+                        print(
+                            f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Incomplete, {is_seen})")
+                        print(
+                            f"Random Agent - Average Success Rate: {random_average_success_rate_incomplete}, Std: {random_std_success_rate_incomplete}")
+
+        # Create DataFrame from results
+        df = pd.DataFrame(results)
+
+        # Save the DataFrame to CSV
+        df.to_csv('data/evaluation_results.csv', index=False)
+        print(df)
+
+        print("All models evaluated and results saved to 'data/evaluation_results.csv'")
+
 
 def learn_envs(environments, max_iterations=10000):
-    model = None
+    """
+    Trains two models per environment using different reward shaping approaches and saves them.
+
+    Parameters:
+    - environments (list of dict): List of environment details.
+    - max_iterations (int): Number of training timesteps.
+
+    Returns:
+    - dict: Dictionary containing trained models.
+    """
+    models = {}
+    reward_types = ['sparse', 'step_cost']
+
     for i, Environment in enumerate(environments):
         env_name = Environment['env']
         env_dir = f'data/trained/{env_name}'
@@ -707,50 +882,67 @@ def learn_envs(environments, max_iterations=10000):
         gameaddress = f'data/Environments/{env_name}'
         game_dict, room_positions = z8file_to_dictionaries(gameaddress)
 
-        # Create and wrap the environment
-        env = TextWorldEnv(
-            game_dict=game_dict,
-            room_positions=room_positions,
-            n_instructions=n_instructions,
-            grammar=8  # Assuming training with 8-sector grammar; adjust if needed
-        )
-        env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
+        for reward_type in reward_types:
+            print(f"  Reward Shaping: {reward_type}")
 
-        reward_threshold = 19
+            # Create and wrap the environment with specified reward_type
+            env = TextWorldEnv(
+                game_dict=game_dict,
+                room_positions=room_positions,
+                n_instructions=n_instructions,
+                grammar=8,  # Assuming training with 8-sector grammar; adjust if needed
+                reward_type=reward_type
+            )
+            env = Monitor(env, filename=f'{env_logs_dir}/monitor_{reward_type}.log', allow_early_resets=True)
 
-        callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-        callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
-        callback = EvalCallback(
-            eval_env=env,
-            best_model_save_path=env_model_dir,
-            log_path=env_logs_dir,
-            eval_freq=50000,
-            deterministic=False,
-            render=False,
-            callback_on_new_best=callbackOnBest
-        )
+            reward_threshold = 19 if reward_type == 'sparse' else None  # No threshold for step_cost
 
-        # Load model if it exists, otherwise initialize it
-        if model is None:
-            model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device='cuda' if torch.cuda.is_available() else 'cpu', exploration_fraction=0.99)
-        else:
-            model.set_env(env)
+            # Define callbacks
+            callbacks = []
+            if reward_type == 'sparse':
+                callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+                callbacks.append(callbackOnBest)
+            callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10,
+                                                                       verbose=1)
+            callbacks.append(callbackOnNoImprovement)
 
-        # Learn the model
-        model.learn(
-            total_timesteps=max_iterations,
-            log_interval=50000,
-            tb_log_name=f'DQN_{env_name}',
-            reset_num_timesteps=True,
-            callback=callback
-        )
+            callback = EvalCallback(
+                eval_env=env,
+                best_model_save_path=env_model_dir,
+                log_path=env_logs_dir,
+                eval_freq=50000,
+                deterministic=False,
+                render=False,
+                callback_on_new_best=callbackOnBest if reward_type == 'sparse' else None
+            )
 
-        # Save the model after training
-        model.save(f'{env_model_dir}/final_modeldict')
-        # Copy the z8 file to the trained folder
-        os.system(f'cp data/Environments/{env_name} {env_dir}/{env_name}')
+            # Initialize or set the model
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device=device, exploration_fraction=0.99)
 
-    return model
+            # Learn the model
+            model.learn(
+                total_timesteps=max_iterations,
+                log_interval=50000,
+                tb_log_name=f'DQN_{env_name}_{reward_type}',
+                reset_num_timesteps=True,
+                callback=callback
+            )
+
+            # Save the model after training
+            model_save_path = f'{env_model_dir}/final_modeldict_{reward_type}'
+            model.save(model_save_path)
+            print(f"  Saved model to {model_save_path}")
+
+            # Copy the z8 file to the trained folder
+            os.makedirs(env_dir, exist_ok=True)
+            os.system(f'cp data/Environments/{env_name} {env_dir}/{env_name}')
+
+            # Store the model reference
+            models[f"{env_name}_{reward_type}"] = model
+
+    return models
+
 
 def predict_proba(model, state):
     print(state)
@@ -763,6 +955,7 @@ def predict_proba(model, state):
     # normalize the probabilities
     probs_np = probs_np / np.sum(probs_np)
     return probs_np
+
 
 def eval_by_interaction(model, env_info, route_instruction):
     env_name = env_info['env']
@@ -779,7 +972,8 @@ def eval_by_interaction(model, env_info, route_instruction):
         room_positions=room_positions,
         x_destination=env_info['x_destination'],
         y_destination=env_info['y_destination'],
-        grammar=8  # Assuming 8-sector grammar; adjust if needed
+        grammar=8,  # Assuming 8-sector grammar; adjust if needed
+        reward_type='sparse'  # Adjust if needed
     )
     env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
@@ -804,7 +998,9 @@ def eval_by_interaction(model, env_info, route_instruction):
             print("Terminating the episode")
             break
 
+
 if __name__ == "__main__":
+    # Load the NLP model (ensure it's installed)
     nlp = spacy.load("en_core_web_sm")
     print(f"CUDA Available: {torch.cuda.is_available()}")
 
@@ -812,13 +1008,13 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    # model = learn_envs(all_env_pretraining, max_iterations=100000)
+    learn_envs(all_env_pretraining, max_iterations=100000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
-        max_seen_envs_per_model=1,        # Limit for seen environments
-        max_unseen_envs_per_model=1,      # Limit for unseen environments
-        random_seed=42                     # Seed for reproducibility
+        max_seen_envs_per_model=5,  # Limit for seen environments
+        max_unseen_envs_per_model=5,  # Limit for unseen environments
+        random_seed=42  # Seed for reproducibility
     )
 
     # Example evaluation by interaction (optional)

@@ -5,6 +5,8 @@ from gymnasium import spaces
 import numpy as np
 import spacy
 import re
+
+from pydantic.v1.utils import truncate
 from stable_baselines3 import DQN
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
@@ -13,6 +15,8 @@ from stable_baselines3.common.monitor import Monitor
 import os
 from z8file_to_dictionaries import z8file_to_dictionaries
 from tqdm import tqdm  # For progress bars
+
+import Pretraining
 
 # Define grammars and their corresponding directions
 GRAMMAR_DIRECTIONS = {
@@ -251,6 +255,8 @@ class TextWorldEnv(gym.Env):
     def step(self, action):
         sentence = self.sentence_from_action_func(action)
         admissible_actions = self.get_admissible_actions()
+        terminate = False
+        truncated = False
 
         # Define "look" action
         look_action_index = self.max_directions
@@ -268,7 +274,7 @@ class TextWorldEnv(gym.Env):
             if self.reward_type == 'sparse':
                 reward = -1
             elif self.reward_type == 'step_cost':
-                reward = -0.5  # Step cost for invalid action
+                reward = -1  # Step cost for invalid action
             terminate = False
             truncated = False
             observation = self.construct_observation(admissible_actions)
@@ -280,7 +286,7 @@ class TextWorldEnv(gym.Env):
                 if self.reward_type == 'sparse':
                     reward = -1
                 elif self.reward_type == 'step_cost':
-                    reward = -0.5  # Step cost for invalid action
+                    reward = -1  # Step cost for invalid action
                 terminate = False
                 truncated = False
                 observation = self.construct_observation(admissible_actions)
@@ -293,13 +299,23 @@ class TextWorldEnv(gym.Env):
             target_x = self.x_destination
             target_y = self.y_destination
 
-            if np.isclose(self.x, target_x, atol=1e-3) and np.isclose(self.y, target_y, atol=1e-3):
+            if np.isclose(self.x, target_x, atol =1e-3) and np.isclose(self.y, target_y, atol=1e-3):
                 reward = 25
                 terminate = True
                 truncated = False
+                observation = self.construct_observation(admissible_actions)
+                # print("terminate1", terminate)
             else:
                 if self.reward_type == 'step_cost':
                     reward = -0.5  # Step cost
+                    # stop long exploration (after 30 steps)
+                    if self.counter > 30:
+                        reward = -1
+                        terminate = False
+                        truncated = True
+                        observation = self.construct_observation(admissible_actions)
+                        self.counter += 1
+                        return observation, reward, terminate, truncated, {}
                 elif self.reward_type == 'sparse':
                     # Check for step limit
                     if self.instruction_index >= len(self.route_instructions) + self.exploration_threshold - 1:
@@ -310,8 +326,9 @@ class TextWorldEnv(gym.Env):
                         self.instruction_index += 1
                         return observation, reward, terminate, truncated, {}
                     reward = 0
-                terminate = False
-                truncated = False
+            # print("terminate2", terminate) if terminate else None
+                # terminate = False
+                # truncated = False
 
             admissible_actions = self.get_admissible_actions()
             observation = self.construct_observation(admissible_actions)
@@ -630,6 +647,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                     gameaddress = f'data/Environments/{env_name}'
                     try:
                         game_dict, room_positions = z8file_to_dictionaries(gameaddress)
+                        print(f"Loaded game dictionary from {gameaddress}")
                     except Exception as e:
                         print(f"Failed to load game dictionary from {gameaddress}: {e}")
                         continue
@@ -644,6 +662,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                     )
                     env_logs_dir = f'data/trained/{model_folder}/Logs'
                     os.makedirs(env_logs_dir, exist_ok=True)
+                    env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
                     env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
                     # Evaluate the trained model with complete instructions
@@ -659,6 +678,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             return_episode_rewards=True,
                             warn=False
                         )
+                        print(f"Episode Rewards: {episode_rewards}")
                         successes = [1 if reward >= 25 else 0 for reward in episode_rewards]
                         average_success_rate = sum(successes) / len(successes)
                         std_success_rate = np.std(successes)
@@ -676,6 +696,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             grammar=grammar,
                             reward_type=reward_type
                         )
+                        random_env = gym.wrappers.TimeLimit(random_env, max_episode_steps=100)
                         random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log', allow_early_resets=True)
 
                         random_average_success_rate, random_std_success_rate = evaluate_random_agent(
@@ -729,7 +750,9 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                                 grammar=grammar,
                                 reward_type=reward_type
                             )
+                            env_incomplete = gym.wrappers.TimeLimit(env_incomplete, max_episode_steps=100)
                             env_incomplete = Monitor(env_incomplete, filename=f'{env_logs_dir}/monitor_incomplete.log', allow_early_resets=True)
+
 
                             # Reset with incomplete instructions
                             observation_incomplete, _ = env_incomplete.reset(route_instructions=incomplete_route_instruction)
@@ -764,6 +787,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                                 grammar=grammar,
                                 reward_type=reward_type
                             )
+                            random_env_incomplete = gym.wrappers.TimeLimit(random_env_incomplete, max_episode_steps=100)
                             random_env_incomplete = Monitor(random_env_incomplete, filename=f'{env_logs_dir}/random_agent_monitor_incomplete.log', allow_early_resets=True)
 
                             # Reset with incomplete instructions
@@ -965,12 +989,12 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=100000)
+    # learn_envs(all_env_pretraining, max_iterations=10000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
-        max_seen_envs_per_model=5,        # Limit for seen environments
-        max_unseen_envs_per_model=5,      # Limit for unseen environments
+        max_seen_envs_per_model=1,        # Limit for seen environments
+        max_unseen_envs_per_model=1,      # Limit for unseen environments
         random_seed=42                     # Seed for reproducibility
     )
 

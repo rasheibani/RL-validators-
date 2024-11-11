@@ -566,9 +566,11 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
     - max_unseen_envs_per_model (int): Maximum number of unseen environments to evaluate per model.
     - random_seed (int): Seed for random number generator to ensure reproducibility.
     """
+
     # Set random seed for reproducibility
     random.seed(random_seed)
     np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
 
     # Define the grammars to evaluate
     grammars = [4, 6, 8]
@@ -665,66 +667,67 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                     env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
                     env = Monitor(env, filename=f'{env_logs_dir}/monitor.log', allow_early_resets=True)
 
-                    # Evaluate the trained model with complete instructions
+                    # Evaluate the trained model with complete instructions (deterministic=True)
                     try:
-                        episode_rewards, _ = evaluate_policy(
+                        episode_rewards_trained, _ = evaluate_policy(
                             model,
                             env,
                             n_eval_episodes=100,
-                            deterministic=False,
+                            deterministic=True,  # Deterministic evaluation for trained model
                             render=False,
                             callback=None,
                             reward_threshold=None,
                             return_episode_rewards=True,
                             warn=False
                         )
-                        print(f"Episode Rewards: {episode_rewards}")
-                        successes = [1 if reward >= 25 else 0 for reward in episode_rewards]
-                        average_success_rate = sum(successes) / len(successes)
-                        std_success_rate = np.std(successes)
+                        successes_trained = [1 if reward >= 25 else 0 for reward in episode_rewards_trained]
+                        average_success_rate_trained = sum(successes_trained) / len(successes_trained)
+                        std_success_rate_trained = np.std(successes_trained)
                     except Exception as e:
-                        print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar}: {e}")
-                        continue
+                        print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Trained): {e}")
+                        average_success_rate_trained = np.nan
+                        std_success_rate_trained = np.nan
 
-                    # Evaluate the random agent on the same environment with complete instructions
+                    # Evaluate the trained model as a random agent (deterministic=False)
                     try:
-                        # Create a fresh environment instance for the random agent with the same grammar and reward_type
-                        random_env = TextWorldEnv(
-                            game_dict=game_dict,
-                            room_positions=room_positions,
-                            n_instructions=15,  # Must match the main env
-                            grammar=grammar,
-                            reward_type=reward_type
-                        )
-                        random_env = gym.wrappers.TimeLimit(random_env, max_episode_steps=100)
-                        random_env = Monitor(random_env, filename=f'{env_logs_dir}/random_agent_monitor.log', allow_early_resets=True)
-
-                        random_average_success_rate, random_std_success_rate = evaluate_random_agent(
-                            random_env,
+                        episode_rewards_random, _ = evaluate_policy(
+                            model,
+                            env,
                             n_eval_episodes=100,
-                            verbose=False
+                            deterministic=False,  # Stochastic evaluation for random agent
+                            render=False,
+                            callback=None,
+                            reward_threshold=None,
+                            return_episode_rewards=True,
+                            warn=False
                         )
+                        successes_random = [1 if reward >= 25 else 0 for reward in episode_rewards_random]
+                        average_success_rate_random = sum(successes_random) / len(successes_random)
+                        std_success_rate_random = np.std(successes_random)
                     except Exception as e:
-                        print(f"Failed to evaluate random agent on environment {env_name} with grammar {grammar}: {e}")
-                        random_average_success_rate = np.nan
-                        random_std_success_rate = np.nan
+                        print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Random Agent Simulation): {e}")
+                        average_success_rate_random = np.nan
+                        std_success_rate_random = np.nan
 
                     # Append the results for complete instructions
                     results.append({
+                        'learned_model_name': model_folder,               # New column
+                        'test_env_short': env_name[:10],                  # New column
                         'name_of_env': env_name,
                         'complexity': complexity,
                         'grammar': grammar,
                         'instruction_type': 'complete',
                         'reward_type': reward_type,
-                        'average_success_rate': average_success_rate,
-                        'std_success_rate': std_success_rate,
-                        'random_agent_average_success_rate': random_average_success_rate,
-                        'random_agent_std_success_rate': random_std_success_rate,
+                        'average_success_rate': average_success_rate_trained,
+                        'std_success_rate': std_success_rate_trained,
+                        'random_agent_average_success_rate': average_success_rate_random,
+                        'random_agent_std_success_rate': std_success_rate_random,
                         'evaluated_env': is_seen
                     })
 
                     print(f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Complete, {is_seen})")
-                    print(f"Random Agent - Average Success Rate: {random_average_success_rate}, Std: {random_std_success_rate}")
+                    print(f"Trained Agent - Average Success Rate: {average_success_rate_trained}, Std: {std_success_rate_trained}")
+                    print(f"Random Agent Simulation - Average Success Rate: {average_success_rate_random}, Std: {std_success_rate_random}")
 
                     # Now evaluate with incomplete instructions by omitting one step (excluding first and last)
                     # Ensure that the route instructions have at least 3 steps to omit one
@@ -753,81 +756,84 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                             env_incomplete = gym.wrappers.TimeLimit(env_incomplete, max_episode_steps=100)
                             env_incomplete = Monitor(env_incomplete, filename=f'{env_logs_dir}/monitor_incomplete.log', allow_early_resets=True)
 
-
                             # Reset with incomplete instructions
                             observation_incomplete, _ = env_incomplete.reset(route_instructions=incomplete_route_instruction)
 
-                            # Evaluate the trained model on incomplete instructions
-                            episode_rewards_incomplete, _ = evaluate_policy(
-                                model,
-                                env_incomplete,
-                                n_eval_episodes=100,
-                                deterministic=False,
-                                render=False,
-                                callback=None,
-                                reward_threshold=None,
-                                return_episode_rewards=True,
-                                warn=False
-                            )
-                            successes_incomplete = [1 if reward >= 25 else 0 for reward in episode_rewards_incomplete]
-                            average_success_rate_incomplete = sum(successes_incomplete) / len(successes_incomplete)
-                            std_success_rate_incomplete = np.std(successes_incomplete)
+                            # Evaluate the trained model with incomplete instructions (deterministic=True)
+                            try:
+                                episode_rewards_trained_incomplete, _ = evaluate_policy(
+                                    model,
+                                    env_incomplete,
+                                    n_eval_episodes=100,
+                                    deterministic=True,  # Deterministic evaluation for trained model
+                                    render=False,
+                                    callback=None,
+                                    reward_threshold=None,
+                                    return_episode_rewards=True,
+                                    warn=False
+                                )
+                                successes_trained_incomplete = [1 if reward >= 25 else 0 for reward in episode_rewards_trained_incomplete]
+                                average_success_rate_trained_incomplete = sum(successes_trained_incomplete) / len(successes_trained_incomplete)
+                                std_success_rate_trained_incomplete = np.std(successes_trained_incomplete)
+                            except Exception as e:
+                                print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete, Trained): {e}")
+                                average_success_rate_trained_incomplete = np.nan
+                                std_success_rate_trained_incomplete = np.nan
+
+                            # Evaluate the trained model as a random agent on incomplete instructions (deterministic=False)
+                            try:
+                                episode_rewards_random_incomplete, _ = evaluate_policy(
+                                    model,
+                                    env_incomplete,
+                                    n_eval_episodes=100,
+                                    deterministic=False,  # Stochastic evaluation for random agent simulation
+                                    render=False,
+                                    callback=None,
+                                    reward_threshold=None,
+                                    return_episode_rewards=True,
+                                    warn=False
+                                )
+                                successes_random_incomplete = [1 if reward >= 25 else 0 for reward in episode_rewards_random_incomplete]
+                                average_success_rate_random_incomplete = sum(successes_random_incomplete) / len(successes_random_incomplete)
+                                std_success_rate_random_incomplete = np.std(successes_random_incomplete)
+                            except Exception as e:
+                                print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete, Random Agent Simulation): {e}")
+                                average_success_rate_random_incomplete = np.nan
+                                std_success_rate_random_incomplete = np.nan
+
+                            # Append the results for incomplete instructions
+                            results.append({
+                                'learned_model_name': model_folder,               # New column
+                                'test_env_short': env_name[:10],                  # New column
+                                'name_of_env': env_name,
+                                'complexity': complexity,
+                                'grammar': grammar,
+                                'instruction_type': 'incomplete',
+                                'reward_type': reward_type,
+                                'average_success_rate': average_success_rate_trained_incomplete,
+                                'std_success_rate': std_success_rate_trained_incomplete,
+                                'random_agent_average_success_rate': average_success_rate_random_incomplete,
+                                'random_agent_std_success_rate': std_success_rate_random_incomplete,
+                                'evaluated_env': is_seen
+                            })
+
+                            print(f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Incomplete, {is_seen})")
+                            print(f"Trained Agent - Average Success Rate: {average_success_rate_trained_incomplete}, Std: {std_success_rate_trained_incomplete}")
+                            print(f"Random Agent Simulation - Average Success Rate: {average_success_rate_random_incomplete}, Std: {std_success_rate_random_incomplete}")
+
                         except Exception as e:
                             print(f"Failed to evaluate model {model_folder} on environment {env_name} with grammar {grammar} (Incomplete): {e}")
-                            average_success_rate_incomplete = np.nan
-                            std_success_rate_incomplete = np.nan
+                            continue
 
-                        # Evaluate the random agent on the same environment with incomplete instructions
-                        try:
-                            # Create a fresh environment instance for the random agent with the same grammar and reward_type
-                            random_env_incomplete = TextWorldEnv(
-                                game_dict=game_dict,
-                                room_positions=room_positions,
-                                n_instructions=15,  # Must match the main env
-                                grammar=grammar,
-                                reward_type=reward_type
-                            )
-                            random_env_incomplete = gym.wrappers.TimeLimit(random_env_incomplete, max_episode_steps=100)
-                            random_env_incomplete = Monitor(random_env_incomplete, filename=f'{env_logs_dir}/random_agent_monitor_incomplete.log', allow_early_resets=True)
+    # After all evaluations, save the results
+    # Create DataFrame from results
+    df = pd.DataFrame(results)
 
-                            # Reset with incomplete instructions
-                            observation_random_incomplete, _ = random_env_incomplete.reset(route_instructions=incomplete_route_instruction)
+    # Save the DataFrame to CSV
+    df.to_csv('data/evaluation_results.csv', index=False)
+    print(df)
 
-                            random_average_success_rate_incomplete, random_std_success_rate_incomplete = evaluate_random_agent(
-                                random_env_incomplete,
-                                n_eval_episodes=100,
-                                verbose=False
-                            )
-                        except Exception as e:
-                            print(f"Failed to evaluate random agent on environment {env_name} with grammar {grammar} (Incomplete): {e}")
-                            random_average_success_rate_incomplete = np.nan
-                            random_std_success_rate_incomplete = np.nan
-
-                        # Append the results for incomplete instructions
-                        results.append({
-                            'name_of_env': env_name,
-                            'complexity': complexity,
-                            'grammar': grammar,
-                            'instruction_type': 'incomplete',
-                            'reward_type': reward_type,
-                            'average_success_rate': average_success_rate_incomplete,
-                            'std_success_rate': std_success_rate_incomplete,
-                            'random_agent_average_success_rate': random_average_success_rate_incomplete,
-                            'random_agent_std_success_rate': random_std_success_rate_incomplete,
-                            'evaluated_env': is_seen
-                        })
-
-                        print(f"Model {model_folder} (Reward: {reward_type}) evaluated on environment {env_name} with grammar {grammar} (Incomplete, {is_seen})")
-                        print(f"Random Agent - Average Success Rate: {random_average_success_rate_incomplete}, Std: {random_std_success_rate_incomplete}")
-
-        # Create DataFrame from results
-        df = pd.DataFrame(results)
-
-        # Save the DataFrame to CSV
-        df.to_csv('data/evaluation_results.csv', index=False)
-        print(df)
-
-        print("All models evaluated and results saved to 'data/evaluation_results.csv'")
+    print("All models evaluated and results saved to 'data/evaluation_results.csv'")
 
 def learn_envs(environments, max_iterations=10000):
     """
@@ -989,12 +995,12 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    # learn_envs(all_env_pretraining, max_iterations=10000)
+    learn_envs(all_env_pretraining, max_iterations=300000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
-        max_seen_envs_per_model=1,        # Limit for seen environments
-        max_unseen_envs_per_model=1,      # Limit for unseen environments
+        max_seen_envs_per_model=5,        # Limit for seen environments
+        max_unseen_envs_per_model=5,      # Limit for unseen environments
         random_seed=42                     # Seed for reproducibility
     )
 

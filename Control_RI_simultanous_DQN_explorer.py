@@ -915,8 +915,7 @@ def learn_envs(environments, max_iterations=10000):
                 total_timesteps=max_iterations,
                 log_interval=50000,
                 tb_log_name=f'DQN_{env_name}_{reward_type}',
-                reset_num_timesteps=True,
-                callback=callback
+                reset_num_timesteps=True
             )
 
             # Save the model after training
@@ -995,7 +994,7 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=300000)
+    learn_envs(all_env_pretraining, max_iterations=200000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(

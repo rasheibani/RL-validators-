@@ -53,3 +53,17 @@ Pretraining100 = [
     "XMA_Average-Regular_Approach2",
     "SOS_arial_Approach2"
 ]
+#
+# # 0-0.25
+# Pretraining25 = ["simplest_simplest"]
+# Pretraining50 = [
+#                # 0.25 - 0.5
+#                "JCD_Average-Regular_Approach1"
+# ]
+# Pretraining75 = [
+#                # .5 - 0.75
+#                'OGB_perspire_Approach2']
+# Pretraining100 = [
+#                # 0.75-1
+#                'CBS_Average-Regular_Approach1'
+# ]

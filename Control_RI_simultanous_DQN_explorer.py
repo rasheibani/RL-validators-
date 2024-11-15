@@ -858,14 +858,14 @@ def learn_envs(environments, max_iterations=10000):
 
         n_instructions = 1
 
-        if env_name == 'simplest_simplest_546025.6070834016_1005814.3004094235.z8':
+        if env_name.startswith('simplest'):
             n_instructions = 1
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining25):
-            n_instructions = 2
+            n_instructions = 1
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining50):
-            n_instructions = 4
+            n_instructions = 2
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining75):
-            n_instructions = 7
+            n_instructions = 5
         elif any(env_name.startswith(envP) for envP in Pretraining.Pretraining100):
             n_instructions = 10
 
@@ -875,6 +875,7 @@ def learn_envs(environments, max_iterations=10000):
 
         for reward_type in reward_types:
             print(f"  Reward Shaping: {reward_type}")
+            print(f"  number of Instructions: {n_instructions}")
 
             # Create and wrap the environment with specified reward_type
             env = TextWorldEnv(
@@ -886,36 +887,38 @@ def learn_envs(environments, max_iterations=10000):
             )
             env = Monitor(env, filename=f'{env_logs_dir}/monitor_{reward_type}.log', allow_early_resets=True)
 
-            reward_threshold = 19 if reward_type == 'sparse' else None  # No threshold for step_cost
+            reward_threshold = 24.9
 
             # Define callbacks
             callbacks = []
             if reward_type == 'sparse':
                 callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
                 callbacks.append(callbackOnBest)
-            callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
-            callbacks.append(callbackOnNoImprovement)
+            # callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
+            # callbacks.append(callbackOnNoImprovement)
 
             callback = EvalCallback(
                 eval_env=env,
                 best_model_save_path=env_model_dir,
                 log_path=env_logs_dir,
-                eval_freq=50000,
-                deterministic=False,
+                eval_freq=200000,
+                deterministic=True,
                 render=False,
-                callback_on_new_best=callbackOnBest if reward_type == 'sparse' else None
+                callback_on_new_best=callbackOnBest
             )
 
             # Initialize or set the model
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device=device, exploration_fraction=0.99)
+            model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device=device, exploration_fraction=0.8,
+                        tensorboard_log=f'data/tensorboard')
 
             # Learn the model
             model.learn(
                 total_timesteps=max_iterations,
-                log_interval=50000,
+                log_interval=10000,
                 tb_log_name=f'DQN_{env_name}_{reward_type}',
-                reset_num_timesteps=True
+                reset_num_timesteps=False,
+                callback=callback
             )
 
             # Save the model after training
@@ -994,13 +997,13 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=200000)
+    learn_envs(all_env_pretraining, max_iterations=3000000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
         max_seen_envs_per_model=5,        # Limit for seen environments
         max_unseen_envs_per_model=5,      # Limit for unseen environments
-        random_seed=42                     # Seed for reproducibility
+        random_seed=69                     # Seed for reproducibility
     )
 
     # Example evaluation by interaction (optional)

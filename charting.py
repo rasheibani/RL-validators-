@@ -12,35 +12,6 @@ plt.style.use("ggplot")
 
 
 
-# 2. Success Rate Comparison: Trained vs Random Agents by Complexity (Box Plot)
-plt.figure(figsize=(14, 8))
-complexities = df['complexity'].unique()
-for complexity in complexities:
-    subset_seen = df[(df['complexity'] == complexity) & (df['evaluated_env'] == 'seen')]
-    subset_unseen = df[(df['complexity'] == complexity) & (df['evaluated_env'] == 'unseen')]
-    plt.boxplot([subset_seen['average_success_rate'], subset_unseen['average_success_rate']], positions=[complexities.tolist().index(complexity) - 0.2, complexities.tolist().index(complexity) + 0.2], widths=0.3, patch_artist=True, labels=['Seen', 'Unseen'], showmeans=True)
-plt.xlabel('Complexity')
-plt.ylabel('Success Rate')
-plt.title('Success Rate Comparison: Trained vs Random Agents by Complexity')
-plt.xticks(range(len(complexities)), complexities, rotation=45)
-plt.show()
-
-# 3. Average Success Rate by Instruction Type and Reward Type (Scatter Plot)
-plt.figure(figsize=(12, 8))
-instruction_types = df['instruction_type'].unique()
-reward_types = df['reward_type'].unique()
-colors = ['b', 'r', 'g', 'orange']
-for i, reward in enumerate(reward_types):
-    subset = df[df['reward_type'] == reward]
-    plt.scatter(subset['instruction_type'], subset['average_success_rate'], color=colors[i % len(colors)], label=reward, alpha=0.6)
-plt.xlabel('Instruction Type')
-plt.ylabel('Average Success Rate')
-plt.title('Average Success Rate by Instruction Type and Reward Type')
-plt.legend(title='Reward Type')
-plt.show()
-
-
-
 
 plt.figure(figsize=(14, 8))
 
@@ -105,6 +76,24 @@ plt.xticks([1, 2, 3, 4], ['Complete - Trained', 'Incomplete - Trained', 'Complet
 plt.ylabel('Success Rate')
 plt.title('Success Rate Distribution: Complete vs Incomplete Route Instructions')
 plt.grid(axis='y', linestyle='--')
+
+# Displaying the plot
+plt.show()
+
+# Setting up the figure size for the pair plot
+plt.figure(figsize=(14, 8))
+
+# Creating a scatter matrix to examine relationships between different metrics
+from pandas.plotting import scatter_matrix
+
+# Selecting key metrics to visualize
+key_metrics = df[['average_success_rate', 'std_success_rate', 'random_agent_average_success_rate', 'random_agent_std_success_rate']]
+
+# Creating the scatter matrix
+scatter_matrix(key_metrics, alpha=0.7, figsize=(14, 14), diagonal='hist', marker='o', hist_kwds={'bins': 20}, color='purple')
+
+# Adding a title for better understanding
+plt.suptitle('Pair Plot Matrix: Key Metrics Relationships', size=16)
 
 # Displaying the plot
 plt.show()

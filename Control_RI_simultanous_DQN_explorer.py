@@ -71,29 +71,40 @@ def sentence_from_action(action, directions):
         return "look"
 
 def normalize(observation):
-    # Separate the components
+    """
+    Normalize the observation to be in the correct range and shape.
+    """
+    # Separate components (assuming shape is max_directions + 15 + 2)
     max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
-    admissible_actions = observation[:max_directions]  # 8
-    route_instructions = observation[max_directions:-1]  # 15
-    instruction_index = observation[-1]  # 1
+    admissible_actions = observation[:max_directions]
+    route_instructions = observation[max_directions:-2]
+    instruction_indices = observation[-2:]  # Both index and current instruction
 
     # Normalize admissible actions (already in [0, 1])
     normalized_admissible_actions = admissible_actions
 
-    # Normalize route instructions, treating max_directions as padding and replacing it with -1
-    normalized_route_instructions = np.where(route_instructions != max_directions, route_instructions / (max_directions - 1), -1)
-
-    # Normalize instruction index
-    max_instruction_index = len(route_instructions)
-    normalized_instruction_index = instruction_index / max_instruction_index if max_instruction_index > 0 else 0
-
-    # Combine normalized components
-    normalized_observation = np.concatenate(
-        [normalized_admissible_actions, normalized_route_instructions, [normalized_instruction_index]]
+    # Normalize route instructions
+    normalized_route_instructions = np.where(
+        route_instructions != max_directions,
+        route_instructions / (max_directions - 1),
+        -1
     )
 
-    return normalized_observation
+    # Normalize instruction indices
+    max_instruction_index = len(route_instructions)
+    normalized_indices = np.array([
+        instruction_indices[0] / max(max_instruction_index, 1),  # instruction index
+        instruction_indices[1] / (max_directions - 1) if instruction_indices[1] != max_directions else -1  # current instruction
+    ])
 
+    # Combine all components
+    normalized_observation = np.concatenate([
+        normalized_admissible_actions,
+        normalized_route_instructions,
+        normalized_indices
+    ])
+
+    return normalized_observation
 def get_admissible_actions(feedback, directions):
     admissible_actions = []
     for direction in directions:
@@ -102,14 +113,19 @@ def get_admissible_actions(feedback, directions):
             admissible_actions.append('go ' + direction)
     return admissible_actions
 
+
 def admissible_actions_to_observation(admissible_actions, directions):
+    """
+    Convert admissible actions to binary vector with consistent shape.
+    """
     max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
     observation = np.zeros(max_directions, dtype=np.int32)
+
     for i, direction in enumerate(directions):
         if f"go {direction}" in admissible_actions:
             observation[i] = 1
-    return observation
 
+    return observation
 def extract_area_id(feedback):
     pattern = r"An area \((\d+)\) in r(\d+)"
     matches = re.search(pattern, feedback)
@@ -152,7 +168,7 @@ class TextWorldEnv(gym.Env):
 
         self.max_directions = max(len(dirs) for dirs in GRAMMAR_DIRECTIONS.values())
         self.action_space = spaces.Discrete(self.max_directions + 1)  # +1 for "look"
-        self.observation_space = spaces.Box(low=0, high=8, shape=(self.max_directions + 15 + 1,), dtype=np.int32)
+        self.observation_space = spaces.Box(low=0, high=8, shape=(self.max_directions + 15 + 2,), dtype=np.int32)
 
     def text_to_action_func(self, text):
         return text_to_action(text, self.directions)
@@ -201,6 +217,7 @@ class TextWorldEnv(gym.Env):
         return self.room_positions[temp_room_id]
 
     def reset(self, **kwargs):
+        self.counter = 0
         # Set the current room to a random starting room
         self.current_room_id = random.choice(list(self.game_dict.keys()))
         self.x, self.y = self.room_positions[self.current_room_id]
@@ -224,8 +241,12 @@ class TextWorldEnv(gym.Env):
         observation = np.concatenate((
             admissible_actions_to_observation(admissible_actions, self.directions),
             self.pad_instructions(),
-            np.array([self.instruction_index])
+            np.array([self.instruction_index, self.route_instructions[self.instruction_index]]),
         ))
+        # verify shape
+        assert observation.shape[0] == self.observation_space.shape[0]\
+            , f"Observation shape mismatch. Expected {self.observation_space.shape[0]}, got {observation.shape[0]}"
+
         observation = normalize(observation)
         return observation, {}
 
@@ -244,19 +265,33 @@ class TextWorldEnv(gym.Env):
             return self.route_instructions[:15]
 
     def construct_observation(self, admissible_actions):
-        observation = np.concatenate((
-            admissible_actions_to_observation(admissible_actions, self.directions),
-            self.pad_instructions(),
-            np.array([self.instruction_index])
-        ))
-        observation = normalize(observation)
-        return observation
+        # Get current instruction safely
+        current_instruction = (
+            self.route_instructions[self.instruction_index]
+            if self.instruction_index < len(self.route_instructions)
+            else self.max_directions
+        )
 
+        # Build observation with consistent shapes
+        observation = np.concatenate([
+            admissible_actions_to_observation(admissible_actions, self.directions),  # max_directions elements
+            self.pad_instructions(),  # 15 elements
+            np.array([self.instruction_index, current_instruction])  # 2 elements
+        ])
+
+        # Verify shape before normalization
+        expected_shape = self.observation_space.shape[0]
+        assert observation.shape[
+                   0] == expected_shape, f"Observation shape mismatch. Expected {expected_shape}, got {observation.shape[0]}"
+
+        return normalize(observation)
     def step(self, action):
         sentence = self.sentence_from_action_func(action)
         admissible_actions = self.get_admissible_actions()
         terminate = False
         truncated = False
+        self.counter += 1
+
 
         # Define "look" action
         look_action_index = self.max_directions
@@ -264,7 +299,7 @@ class TextWorldEnv(gym.Env):
             if self.reward_type == 'sparse':
                 reward = -1
             elif self.reward_type == 'step_cost':
-                reward = -0.5  # Step cost
+                reward = -1  # Step cost
             terminate = False
             truncated = False
             observation = self.construct_observation(admissible_actions)
@@ -309,12 +344,11 @@ class TextWorldEnv(gym.Env):
                 if self.reward_type == 'step_cost':
                     reward = -0.5  # Step cost
                     # stop long exploration (after 30 steps)
-                    if self.counter > 30:
+                    if self.counter > self.n_instructions + self.exploration_threshold:
                         reward = -1
                         terminate = False
                         truncated = True
                         observation = self.construct_observation(admissible_actions)
-                        self.counter += 1
                         return observation, reward, terminate, truncated, {}
                 elif self.reward_type == 'sparse':
                     # Check for step limit
@@ -334,6 +368,8 @@ class TextWorldEnv(gym.Env):
             observation = self.construct_observation(admissible_actions)
             self.instruction_index += 1
             return observation, reward, terminate, truncated, {}
+
+
 
     def render(self):
         pass  # Implement if needed
@@ -658,7 +694,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
                     env = TextWorldEnv(
                         game_dict=game_dict,
                         room_positions=room_positions,
-                        n_instructions=15,  # Adjust as needed
+                        n_instructions=3,  # Adjust as needed
                         grammar=grammar,
                         reward_type=reward_type
                     )
@@ -835,6 +871,89 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
 
     print("All models evaluated and results saved to 'data/evaluation_results.csv'")
 
+
+from stable_baselines3.common.callbacks import BaseCallback
+
+class CustomStopOnNoImprovement(BaseCallback):
+    """
+    A custom callback that stops training if there is no model improvement over a given number of evaluations.
+
+    :param max_no_improvement_evals: The number of evaluations without improvement before stopping.
+    :param min_evals: The minimum number of evaluations before checking for improvement.
+    :param verbose: Verbosity level (0: no output, 1: info messages, 2: debug messages)
+    """
+
+    def __init__(self, max_no_improvement_evals: int = 3, min_evals: int = 10, verbose: int = 0):
+        super().__init__(verbose)
+        self.max_no_improvement_evals = max_no_improvement_evals
+        self.min_evals = min_evals
+        self.eval_count = 0
+        self.no_improvement_count = 0
+        self.best_reward = -np.inf
+
+    def _on_training_start(self) -> None:
+        """This method is called before the first rollout starts."""
+        self.eval_count = 0
+        self.no_improvement_count = 0
+        self.best_reward = -np.inf
+
+    def _on_step(self) -> bool:
+        """Called after each call to `env.step()`. Can stop training early."""
+        return True  # We continue training by default
+
+    def _on_rollout_end(self) -> None:
+        """This method is called before updating the policy."""
+        # Perform evaluation after each rollout (or batch of rollouts)
+        if self.eval_count >= self.min_evals:
+            eval_reward = self.evaluate_model()
+            self.eval_count += 1
+
+            # Check if the reward has improved
+            if eval_reward > self.best_reward:
+                self.best_reward = eval_reward
+                self.no_improvement_count = 0  # Reset counter
+            else:
+                self.no_improvement_count += 1
+
+            # If there was no improvement in the last `max_no_improvement_evals` evaluations, stop training
+            if self.no_improvement_count >= self.max_no_improvement_evals:
+                self.logger.info("Stopping training due to no improvement.")
+                self.model.stop_training = True
+
+    def evaluate_model(self) -> float:
+        """
+        Evaluate the model over a few episodes and return the average reward.
+        Truncate episodes after 100 timesteps if not done.
+        :return: The average reward over the evaluation episodes.
+        """
+        total_reward = 0
+        eval_episodes = 5  # Adjust the number of episodes to evaluate
+        for _ in range(eval_episodes):
+            obs = self.training_env.reset()
+            done = False
+            episode_reward = 0
+            timestep = 0
+            while not done and timestep < 100:  # Stop after 100 timesteps
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, done, _ = self.training_env.step(action)
+                episode_reward += reward
+                timestep += 1
+
+            # If the episode isn't done, we truncate the evaluation after 100 timesteps
+            if timestep >= 100:
+                done = True  # Force the episode to end
+
+            total_reward += episode_reward
+
+        avg_reward = total_reward / eval_episodes
+        self.logger.info(f"Evaluation reward: {avg_reward}")
+        return avg_reward
+
+    def _on_training_end(self) -> None:
+        """Called before exiting the `learn()` method."""
+        pass
+
+
 def learn_envs(environments, max_iterations=10000):
     """
     Trains two models per environment using different reward shaping approaches and saves them.
@@ -890,13 +1009,9 @@ def learn_envs(environments, max_iterations=10000):
             reward_threshold = 24.9
 
             # Define callbacks
-            callbacks = []
-            if reward_type == 'sparse':
-                callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-                callbacks.append(callbackOnBest)
-            # callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
-            # callbacks.append(callbackOnNoImprovement)
-
+            callbackOnBest = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+            callbackOnNoImprovement = StopTrainingOnNoModelImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
+            custom_callback = CustomStopOnNoImprovement(max_no_improvement_evals=3, min_evals=10, verbose=1)
             callback = EvalCallback(
                 eval_env=env,
                 best_model_save_path=env_model_dir,
@@ -904,13 +1019,15 @@ def learn_envs(environments, max_iterations=10000):
                 eval_freq=200000,
                 deterministic=True,
                 render=False,
-                callback_on_new_best=callbackOnBest
-            )
+                callback_on_new_best=callbackOnBest,
+                n_eval_episodes=100)
 
             # Initialize or set the model
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device=device, exploration_fraction=0.8,
-                        tensorboard_log=f'data/tensorboard')
+                        tensorboard_log=f'data/tensorboard',
+                        policy_kwargs=dict(net_arch=[256, 256]),
+                        learning_rate=0.0005)
 
             # Learn the model
             model.learn(
@@ -918,7 +1035,7 @@ def learn_envs(environments, max_iterations=10000):
                 log_interval=10000,
                 tb_log_name=f'DQN_{env_name}_{reward_type}',
                 reset_num_timesteps=False,
-                callback=callback
+                callback=custom_callback
             )
 
             # Save the model after training
@@ -997,13 +1114,13 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=3000000)
+    learn_envs(all_env_pretraining, max_iterations=2000000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(
-        max_seen_envs_per_model=5,        # Limit for seen environments
-        max_unseen_envs_per_model=5,      # Limit for unseen environments
-        random_seed=69                     # Seed for reproducibility
+        max_seen_envs_per_model=2,        # Limit for seen environments
+        max_unseen_envs_per_model=2,      # Limit for unseen environments
+        random_seed=42                     # Seed for reproducibility
     )
 
     # Example evaluation by interaction (optional)

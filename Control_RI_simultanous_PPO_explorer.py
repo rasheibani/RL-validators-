@@ -7,7 +7,7 @@ import spacy
 import re
 
 from pydantic.v1.utils import truncate
-from stable_baselines3 import DQN
+from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 import torch
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, StopTrainingOnNoModelImprovement
@@ -645,7 +645,7 @@ def evaluate_all_trained_models(max_seen_envs_per_model=5, max_unseen_envs_per_m
 
             # Load the model
             try:
-                model = DQN.load(model_path, device='cuda' if torch.cuda.is_available() else 'cpu')
+                model = PPO.load(model_path, device='cuda' if torch.cuda.is_available() else 'cpu')
                 print(f"Loaded model from {model_path}")
             except Exception as e:
                 print(f"Failed to load model from {model_path}: {e}")
@@ -1033,7 +1033,7 @@ def learn_envs(environments, max_iterations=10000):
 
             # Initialize or set the model
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            model = DQN('MlpPolicy', env=env, verbose=1, seed=0, device=device, exploration_fraction=0.5,
+            model = PPO('MlpPolicy', env=env, verbose=1, seed=0, device=device,
                         tensorboard_log=f'data/tensorboard',
                         policy_kwargs=dict(net_arch=[256, 256]),
                         learning_rate=0.0005)
@@ -1042,7 +1042,7 @@ def learn_envs(environments, max_iterations=10000):
             model.learn(
                 total_timesteps=max_iterations,
                 log_interval=20000,
-                tb_log_name=f'DQN_{env_name}_{reward_type}',
+                tb_log_name=f'PPO_{env_name}_{reward_type}',
                 reset_num_timesteps=False,
                 callback=custom_callback
             )
@@ -1123,7 +1123,7 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    # learn_envs(all_env_pretraining, max_iterations=1000000)
+    learn_envs(all_env_pretraining, max_iterations=100000)
 
     # Evaluate all trained models with specified limits
     evaluate_all_trained_models(

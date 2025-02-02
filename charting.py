@@ -90,7 +90,7 @@ from pandas.plotting import scatter_matrix
 key_metrics = df[['average_success_rate', 'std_success_rate', 'random_agent_average_success_rate', 'random_agent_std_success_rate']]
 
 # Creating the scatter matrix
-scatter_matrix(key_metrics, alpha=0.7, figsize=(14, 14), diagonal='hist', marker='o', hist_kwds={'bins': 20}, color='purple')
+scatter_matrix(key_metrics, alpha=0.7, figsize=(14, 14), diagonal='kde', marker='o', hist_kwds={'bins': 20}, color='purple')
 
 # Adding a title for better understanding
 plt.suptitle('Pair Plot Matrix: Key Metrics Relationships', size=16)

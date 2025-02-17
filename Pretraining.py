@@ -1,4 +1,4 @@
-# 0-0.25
+# # 0-0.25
 Pretraining25 = ["simplest_simplest",
                "A_Average-Regular_Approach2",
                "ZOZ_perspire_Approach2",
@@ -55,25 +55,17 @@ Pretraining100 = [
 ]
 #
 # # 0-0.25
-# Pretraining25 = ["simplest_simplest",
-#                 "A_Average-Regular_Approach2",
-#                   "ZSM_perspire_Approach2"
+# Pretraining25 = ["simplest_simplest"
 # ]
 # Pretraining50 = [
 #                # 0.25 - 0.5
-#                "JCD_Average-Regular_Approach1",
-#                 "KIW_arial_Approach1",
-#                 "MMK_arial_Approach1"
+#                "JCD_Average-Regular_Approach1"
 # ]
 # Pretraining75 = [
 #                # .5 - 0.75
-#                'AEY_Average-Regular_Approach1',
-#                 'KIW_Average-Regular_Approach1',
-#                 'NPP_Average-Regular_Approach1'
+#                'AEY_Average-Regular_Approach1'
 # ]
 # Pretraining100 = [
 #                # 0.75-1
-#                'CBS_Average-Regular_Approach1',
-#                 'DAQ_Average-Regular_Approach1',
-#                 'DMF_Average-Regular_Approach1'
+#                'CBS_Average-Regular_Approach1'
 # ]

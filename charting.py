@@ -4,12 +4,11 @@ import numpy as np
 import os
 
 # Load the CSV file
-file_path = 'data/evaluation_results.csv'
+file_path = 'data/curriculum_evaluation_results.csv'
 df = pd.read_csv(file_path)
 
 # Set a style for more visually appealing charts
 plt.style.use("ggplot")
-
 
 
 
@@ -45,19 +44,27 @@ plt.show()
 plt.figure(figsize=(12, 8))
 instruction_types = df['instruction_type'].unique()
 reward_types = df['reward_type'].unique()
+bar_width = 0.35  # Width of each bar
+x_positions = np.arange(len(instruction_types)) # Positions for each instruction type group
 
-bottom_values = np.zeros(len(instruction_types))
-for reward in reward_types:
+# Iterate through reward types and plot bars for each group
+for i, reward in enumerate(reward_types):
     subset = df[df['reward_type'] == reward]
     avg_success_rate_per_instruction = subset.groupby('instruction_type')['average_success_rate'].mean()
-    plt.bar(avg_success_rate_per_instruction.index, avg_success_rate_per_instruction, bottom=bottom_values[:len(avg_success_rate_per_instruction)], label=f'Reward Type: {reward}', alpha=0.7)
-    bottom_values[:len(avg_success_rate_per_instruction)] += avg_success_rate_per_instruction.values
+    # Calculate x positions for each bar within the group
+    bar_positions = x_positions + i * bar_width - (len(reward_types) -1) * bar_width / 2 # Adjust to center groups
+
+    plt.bar(bar_positions, avg_success_rate_per_instruction[instruction_types], width=bar_width, label=f'Reward Type: {reward}', alpha=0.7) # use instruction_types to maintain order
+
 
 plt.xlabel('Instruction Type')
 plt.ylabel('Average Success Rate')
-plt.title('Average Success Rate by Instruction Type and Reward Type')
+plt.title('Average Success Rate by Instruction Type and Reward Type (Grouped Bar Chart)')
 plt.legend(title='Reward Type')
-plt.xticks(rotation=45)
+
+# Set x ticks in the center of each group and label them with instruction types
+plt.xticks(x_positions, instruction_types, rotation=45, ha='right')
+plt.tight_layout() # Adjust layout to prevent labels from being cut off
 plt.show()
 
 

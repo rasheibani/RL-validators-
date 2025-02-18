@@ -336,14 +336,14 @@ if __name__ == "__main__":
     pretraining_set = all_envs[0]['lettertext']
     print(all_envs[0])
     all_env_pretraining = []
-    # for env in all_envs:
-    #     if env['lettertext'] in pretraining_set:
-    #         all_env_pretraining.append(env)
-    #
-    # print(len(all_env_pretraining))
-    #
-    # # learn the environments in all_env_pretraining
-    # model = learn_envs(all_env_pretraining)
+    for env in all_envs:
+        if env['lettertext'] in pretraining_set:
+            all_env_pretraining.append(env)
+
+    print(len(all_env_pretraining))
+
+    # learn the environments in all_env_pretraining
+    model = learn_envs(all_env_pretraining)
 
     # evaluate the model
     model = PPO.load('data/A_Average-Regular_Approach1_545604.9376088154_1000842.9379071898.z8/Models/final_model')

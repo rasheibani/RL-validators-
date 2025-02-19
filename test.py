@@ -30,7 +30,7 @@ for folder in os.listdir('data/trained'):
             chunk_size += 1
             if row['r'] + row['l'] > 20:
                 chunk_counts += 1
-            if cumulative_time >= 1000:
+            if cumulative_time >= 5000:
                 success_rate = chunk_counts / chunk_size
                 success_rates.append(success_rate)
                 cumulative_time = 0
@@ -83,3 +83,4 @@ for idx, category in enumerate(pretraining_data.keys()):
 
 plt.tight_layout()
 plt.show()
+plt.savefig('data/figures/pretraining_success_rates2.png')

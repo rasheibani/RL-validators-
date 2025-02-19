@@ -1067,7 +1067,7 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=10000)
+    learn_envs(all_env_pretraining, max_iterations=1000000)
 
     # Evaluate all trained models with specified limits
     evaluate_curriculum_models(

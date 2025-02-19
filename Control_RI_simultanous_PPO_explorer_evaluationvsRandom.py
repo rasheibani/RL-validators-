@@ -1,4 +1,6 @@
 import random
+from os import environ
+
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
@@ -16,6 +18,7 @@ import os
 from z8file_to_dictionaries import z8file_to_dictionaries
 from tqdm import tqdm  # For progress bars
 import warnings
+import matplotlib.pyplot as plt
 
 import Pretraining
 
@@ -148,7 +151,7 @@ def extract_area_id(feedback):
 
 class TextWorldEnv(gym.Env):
     def __init__(self, game_dict, room_positions, x_destination=None, y_destination=None, n_instructions=1, grammar=8,
-                 reward_type='sparse'):
+                 reward_type='sparse', is_incomplete=False, route_instructions=None):
         super(TextWorldEnv, self).__init__()
         self.game_dict = game_dict  # The game dictionary
         self.room_positions = room_positions  # Mapping from room IDs to (x, y) coordinates
@@ -157,10 +160,11 @@ class TextWorldEnv(gym.Env):
         self.grammar = grammar  # 4, 6, or 8
         self.reward_type = reward_type  # 'sparse' or 'step_cost'
         self.instruction_index = 0
-        self.route_instructions = []
+        self.route_instructions = [] if route_instructions is None else route_instructions
         self.visited_states_actions = set()
         self.last_feedback_embedding = None
         self.counter = 0
+        self.is_incomplete = is_incomplete
         self.x_destination = x_destination
         self.y_destination = y_destination
         self.x_origin = None
@@ -238,13 +242,9 @@ class TextWorldEnv(gym.Env):
         self.visited_states_actions.clear()
         self.instruction_index = 0
 
-        if 'route_instructions' in kwargs:
-            rti = kwargs['route_instructions']
-            # Handle incomplete route instructions by allowing missing steps
-            self.route_instructions = [self.text_to_action_func(instr) for instr in rti.split('. ')]
-            # check if the x y of destination is None, then find them from the route instructions
+        if self.is_incomplete:
             if self.x_destination is None or self.y_destination is None:
-                self.x_destination, self.y_destination = self.get_destination_from_route_instructions(self.route_instructions)
+                raise ValueError("x_destination and y_destination must be provided for incomplete instructions")
         else:
             self.route_instructions, self.x_destination, self.y_destination = self.generate_route_instructions()
             # print(f"Route instructions: {self.route_instructions}")
@@ -392,12 +392,14 @@ class TextWorldEnv(gym.Env):
             admissible_actions = self.get_admissible_actions()
             observation = self.construct_observation(admissible_actions)
             self.instruction_index += 1
+            self.visited_states_actions.add((self.current_room_id, sentence))
             return observation, reward, terminate, truncated, {}
 
 
 
     def render(self):
-        pass  # Implement if needed
+        pass
+
 
     def close(self):
         pass  # Implement if needed
@@ -796,25 +798,27 @@ def create_incomplete_environment(base_env, game_dict, room_positions, grammar, 
     incomplete_instructions = base_env.route_instructions.copy()
     del incomplete_instructions[len(incomplete_instructions) // 2]
 
-    # Create new environment
-    env = TextWorldEnv(
-        game_dict=game_dict,
-        room_positions=room_positions,
-        n_instructions=4,
-        grammar=grammar,
-        reward_type=reward_type
-    )
-    env = gym.wrappers.TimeLimit(env, max_episode_steps=100)
+    env = base_env
 
     # Convert instructions to text format
     instruction_text = '. '.join(
         [sentence_from_action(a, env.directions) for a in incomplete_instructions]
     ) + '. Arrive at destination!'
 
-    env.reset(route_instructions=instruction_text)
+    # Create new environment with incomplete instructions
+    env = TextWorldEnv(
+        game_dict=game_dict,
+        room_positions=room_positions,
+        n_instructions=4,
+        grammar=grammar,
+        reward_type=reward_type,
+        is_incomplete=True,
+        x_destination=env.x_destination,  # overwrite the x_destination and y_destination from the base_env
+        y_destination=env.y_destination,
+        route_instructions=incomplete_instructions)
+
 
     # overwrite the x_destination and y_destination from the base_env
-    env.x_destination, env.y_destination = base_env.x_destination, base_env.y_destination
     return env
 
 
@@ -1063,12 +1067,12 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    # learn_envs(all_env_pretraining, max_iterations=1000000)
+    learn_envs(all_env_pretraining, max_iterations=10000)
 
     # Evaluate all trained models with specified limits
     evaluate_curriculum_models(
-        max_seen_envs=30,
-        max_unseen_envs=30,
+        max_seen_envs=1,
+        max_unseen_envs=1,
         random_seed=2                 # Seed for reproducibility
     )
 

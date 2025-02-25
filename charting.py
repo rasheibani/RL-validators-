@@ -78,7 +78,7 @@ complete_random_success = df[df['instruction_type'] == 'complete']['random_agent
 incomplete_random_success = df[df['instruction_type'] == 'incomplete']['random_agent_average_success_rate']
 
 # Plotting the violin plot
-plt.violinplot([complete_trained_success, complete_random_success], showmeans=True)
+plt.violinplot([incomplete_trained_success, complete_random_success, ], showmeans=True)
 plt.xticks([1, 2], ['Complete - Trained', 'Complete - Random'])
 plt.ylabel('Success Rate')
 plt.title('Success Rate Distribution: Complete vs Incomplete Route Instructions')

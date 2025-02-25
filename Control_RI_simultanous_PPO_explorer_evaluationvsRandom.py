@@ -652,6 +652,8 @@ def evaluate_curriculum_models(max_seen_envs=5, max_unseen_envs=5, random_seed=4
     reward_types = ['sparse', 'step_cost']
     results = []
 
+    n_instructions = 10
+
     # Load environment data
     all_env_pretraining = load_envs()
     seen_env_names = {env['env'] for env in all_env_pretraining}
@@ -698,7 +700,7 @@ def evaluate_curriculum_models(max_seen_envs=5, max_unseen_envs=5, random_seed=4
                 env = TextWorldEnv(
                     game_dict=game_dict,
                     room_positions=room_positions,
-                    n_instructions=3,
+                    n_instructions=n_instructions,
                     grammar=grammar,
                     reward_type=reward_type
                 )
@@ -708,7 +710,9 @@ def evaluate_curriculum_models(max_seen_envs=5, max_unseen_envs=5, random_seed=4
                 success_trained, std_trained = evaluate_model(model, env)
 
                 # Evaluate random agent
+
                 random_rewards = evaluate_random_agent(env, n_eval_episodes=100)
+
                 random_successes = [1 if r >= 25 else 0 for r in random_rewards]
                 success_random = np.mean(random_successes)
                 std_random = np.std(random_successes)
@@ -729,8 +733,11 @@ def evaluate_curriculum_models(max_seen_envs=5, max_unseen_envs=5, random_seed=4
 
                 # Evaluate incomplete instructions
                 if len(env.route_instructions) >= 3:
-                    env_incomplete = create_incomplete_environment(env, game_dict, room_positions, grammar, reward_type)
+                    env_incomplete = create_incomplete_environment(env, game_dict, room_positions, grammar, reward_type,n_instructions=n_instructions)
+                    env_incomplete = gym.wrappers.TimeLimit(env_incomplete, max_episode_steps=n_instructions + 14)
+
                     success_trained_inc, std_trained_inc = evaluate_model(model, env_incomplete)
+
 
                     # Evaluate random agent on incomplete instructions
                     random_rewards_inc = evaluate_random_agent(env_incomplete, n_eval_episodes=100)
@@ -789,7 +796,7 @@ def evaluate_model(model, env, n_episodes=10):
         print(f"Returning NaN, NaN from except block...") # Debugging - returning from except
         return np.nan, np.nan
 
-def create_incomplete_environment(base_env, game_dict, room_positions, grammar, reward_type):
+def create_incomplete_environment(base_env, game_dict, room_positions, grammar, reward_type, n_instructions=4):
     """Create environment with incomplete instructions"""
     if len(base_env.route_instructions) < 3:
         return None
@@ -798,23 +805,16 @@ def create_incomplete_environment(base_env, game_dict, room_positions, grammar, 
     incomplete_instructions = base_env.route_instructions.copy()
     del incomplete_instructions[len(incomplete_instructions) // 2]
 
-    env = base_env
-
-    # Convert instructions to text format
-    instruction_text = '. '.join(
-        [sentence_from_action(a, env.directions) for a in incomplete_instructions]
-    ) + '. Arrive at destination!'
-
     # Create new environment with incomplete instructions
     env = TextWorldEnv(
         game_dict=game_dict,
         room_positions=room_positions,
-        n_instructions=4,
+        n_instructions=n_instructions,
         grammar=grammar,
         reward_type=reward_type,
         is_incomplete=True,
-        x_destination=env.x_destination,  # overwrite the x_destination and y_destination from the base_env
-        y_destination=env.y_destination,
+        x_destination=base_env.x_destination,  # overwrite the x_destination and y_destination from the base_env
+        y_destination=base_env.y_destination,
         route_instructions=incomplete_instructions)
 
 
@@ -1067,12 +1067,12 @@ if __name__ == "__main__":
     all_env_pretraining = load_envs()
 
     # Learn the environments (training process)
-    learn_envs(all_env_pretraining, max_iterations=1000000)
+    # learn_envs(all_env_pretraining, max_iterations=500000)
 
     # Evaluate all trained models with specified limits
     evaluate_curriculum_models(
-        max_seen_envs=1,
-        max_unseen_envs=1,
+        max_seen_envs=20,
+        max_unseen_envs=20,
         random_seed=2                 # Seed for reproducibility
     )
 
